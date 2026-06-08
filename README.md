@@ -1,36 +1,67 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Body Doubling Free MVP
 
-## Getting Started
+Browser-first AI body-doubling coach built with Next.js App Router, Firebase Auth (anonymous), Firestore persistence, and optional OpenAI-compatible text generation.
 
-First, run the development server:
+## MVP Includes
+
+- Intake flow: task, done definition, duration, difficulty, first tiny step
+- Strict client session states: `idle -> intake -> active -> check_in -> recovery -> debrief -> complete`
+- Timed check-ins at meaningful intervals (not every minute)
+- Recovery logic for `stuck`, `distracted`, and `done_early`
+- Debrief summary persistence and optional LLM-generated wrap-up
+- Browser speech synthesis voice mode + animated speaking orb
+- Vercel-compatible structure (Next.js API routes + App Router)
+
+## Routing + API
+
+- Canonical user flow runs on `/` (single-page state machine UX).
+- Legacy UI routes (`/kickoff`, `/active`, `/check-ins`, `/debrief`) redirect to `/`.
+- Canonical API routes:
+  - `POST /api/sessions/start`
+  - `POST /api/sessions/kickoff`
+  - `POST /api/sessions/check-in`
+  - `POST /api/sessions/recovery`
+  - `POST /api/sessions/debrief`
+- Legacy API routes still exist as thin wrappers for compatibility and forward to `/api/sessions/*`.
+
+## Firestore Collections
+
+- `users`
+- `sessions`
+- `session_goals`
+- `check_in_events`
+- `user_responses`
+- `debrief_summaries`
+- `coach_preferences`
+
+## Local Setup
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Copy env template and fill values:
+
+```bash
+cp .env.example .env.local
+```
+
+3. Run dev server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+4. Open [http://localhost:3000](http://localhost:3000)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+See `.env.example` for required values:
 
-## Learn More
+- Firebase client keys (`NEXT_PUBLIC_FIREBASE_*`)
+- Firebase admin credentials for API persistence
+- Optional OpenAI-compatible config (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`)
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+If `OPENAI_API_KEY` is missing, coach generation gracefully falls back to deterministic templates.

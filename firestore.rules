@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    function ownsDoc() {
+      return isAuthed() && request.resource.data.user_id == request.auth.uid;
+    }
+
+    function ownsExistingDoc() {
+      return isAuthed() && resource.data.user_id == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow create, update: if isAuthed() && userId == request.auth.uid && request.resource.data.uid == request.auth.uid;
+      allow read, delete: if isAuthed() && userId == request.auth.uid;
+    }
+
+    match /sessions/{docId} {
+      allow create: if ownsDoc();
+      allow read, update, delete: if ownsExistingDoc();
+    }
+
+    match /session_goals/{docId} {
+      allow create: if ownsDoc();
+      allow read, update, delete: if ownsExistingDoc();
+    }
+
+    match /check_in_events/{docId} {
+      allow create: if ownsDoc();
+      allow read, update, delete: if ownsExistingDoc();
+    }
+
+    match /user_responses/{docId} {
+      allow create: if ownsDoc();
+      allow read, update, delete: if ownsExistingDoc();
+    }
+
+    match /debrief_summaries/{docId} {
+      allow create: if ownsDoc();
+      allow read, update, delete: if ownsExistingDoc();
+    }
+
+    match /coach_preferences/{docId} {
+      allow create: if ownsDoc();
+      allow read, update, delete: if ownsExistingDoc();
+    }
+  }
+}

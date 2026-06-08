@@ -78,18 +78,47 @@ export type UseSpeechRecognitionOptions = {
   continuous?: boolean;
   interimResults?: boolean;
   maxAlternatives?: number;
+  onDiagnosticEvent?: (event: SpeechRecognitionDiagnosticEvent) => void;
 };
 
 export type SpeechRecognitionStartOptions = {
   userInitiated?: boolean;
 };
 
+export type SpeechRecognitionState = "idle" | "starting" | "listening" | "error" | "ended";
+
+export type SpeechRecognitionEventCounts = {
+  starts: number;
+  results: number;
+  errors: number;
+  ends: number;
+};
+
+export type SpeechRecognitionDiagnosticEventType =
+  | "start-attempt"
+  | "start"
+  | "result"
+  | "error"
+  | "end"
+  | "stop-requested";
+
+export type SpeechRecognitionDiagnosticEvent = {
+  type: SpeechRecognitionDiagnosticEventType;
+  state: SpeechRecognitionState;
+  counts: SpeechRecognitionEventCounts;
+  error: UseSpeechRecognitionError | null;
+  timestamp: number;
+};
+
 export type UseSpeechRecognitionReturn = {
   listening: boolean;
+  state: SpeechRecognitionState;
+  eventCounts: SpeechRecognitionEventCounts;
   interimTranscript: string;
   finalTranscript: string;
   transcript: string;
   error: UseSpeechRecognitionError | null;
+  lastError: UseSpeechRecognitionError | null;
   start: (options?: SpeechRecognitionStartOptions) => boolean;
   stop: () => void;
   resetTranscript: () => void;
@@ -130,11 +159,55 @@ export function useSpeechRecognition(
   options: UseSpeechRecognitionOptions = {},
 ): UseSpeechRecognitionReturn {
   const [listening, setListening] = useState(false);
+  const [state, setState] = useState<SpeechRecognitionState>("idle");
+  const [eventCounts, setEventCounts] = useState<SpeechRecognitionEventCounts>({
+    starts: 0,
+    results: 0,
+    errors: 0,
+    ends: 0,
+  });
   const [interimTranscript, setInterimTranscript] = useState("");
   const [finalTranscript, setFinalTranscript] = useState("");
   const [error, setError] = useState<UseSpeechRecognitionError | null>(null);
+  const [lastError, setLastError] = useState<UseSpeechRecognitionError | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const startOptionsRef = useRef<SpeechRecognitionStartOptions>({ userInitiated: true });
+  const stateRef = useRef<SpeechRecognitionState>("idle");
+  const countsRef = useRef<SpeechRecognitionEventCounts>({
+    starts: 0,
+    results: 0,
+    errors: 0,
+    ends: 0,
+  });
+  const errorRef = useRef<UseSpeechRecognitionError | null>(null);
+  const diagnosticCallbackRef = useRef(options.onDiagnosticEvent);
+
+  useEffect(() => {
+    diagnosticCallbackRef.current = options.onDiagnosticEvent;
+  }, [options.onDiagnosticEvent]);
+
+  const emitDiagnosticEvent = useCallback((type: SpeechRecognitionDiagnosticEventType) => {
+    diagnosticCallbackRef.current?.({
+      type,
+      state: stateRef.current,
+      counts: countsRef.current,
+      error: errorRef.current,
+      timestamp: Date.now(),
+    });
+  }, []);
+
+  const setRecognitionState = useCallback((nextState: SpeechRecognitionState) => {
+    stateRef.current = nextState;
+    setState(nextState);
+  }, []);
+
+  const bumpCount = useCallback((key: keyof SpeechRecognitionEventCounts) => {
+    setEventCounts((previous) => {
+      const nextCounts = { ...previous, [key]: previous[key] + 1 };
+      countsRef.current = nextCounts;
+      return nextCounts;
+    });
+  }, []);
 
   const resetTranscript = useCallback(() => {
     setInterimTranscript("");
@@ -142,31 +215,76 @@ export function useSpeechRecognition(
   }, []);
 
   const clearError = useCallback(() => {
+    errorRef.current = null;
     setError(null);
   }, []);
 
   const stop = useCallback(() => {
+    emitDiagnosticEvent("stop-requested");
     recognitionRef.current?.stop();
-  }, []);
+  }, [emitDiagnosticEvent]);
 
-  const start = useCallback((startOptions: SpeechRecognitionStartOptions = {}): boolean => {
-    startOptionsRef.current = { userInitiated: startOptions.userInitiated ?? true };
+  const start = useCallback(async (startOptions: SpeechRecognitionStartOptions = {}): Promise<boolean> => {
+    if (startInFlightRef.current) {
+      return false;
+    }
+    startInFlightRef.current = true;
+    emitDiagnosticEvent("start-attempt");
+    startOptionsRef.current = {
+      userInitiated: startOptions.userInitiated ?? true,
+      autoRestart: startOptions.autoRestart ?? false,
+    };
+    shouldAutoRestartRef.current = startOptionsRef.current.autoRestart ?? false;
+    clearRestartTimer();
+    setRecognitionState("starting");
+
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+
+    const hasPermission = await requestMicrophonePermission();
+    if (!hasPermission) {
+      const nextError: UseSpeechRecognitionError = {
+        code: "permission-denied",
+        message: "Microphone access denied. Tap Allow microphone to grant access.",
+      };
+      errorRef.current = nextError;
+      setError(nextError);
+      setLastError(nextError);
+      setListening(false);
+      setRecognitionState("error");
+      emitDiagnosticEvent("error");
+      setRetryCount((previous) => previous + 1);
+      startInFlightRef.current = false;
+      return false;
+    }
+
     const Recognition = getSpeechRecognitionConstructor();
     if (!Recognition) {
-      setError({
+      const nextError: UseSpeechRecognitionError = {
         code: "unsupported-browser",
         message: "Speech recognition is not supported in this browser.",
-      });
+      };
+      errorRef.current = nextError;
+      setError(nextError);
+      setLastError(nextError);
       setListening(false);
+      setRecognitionState("error");
+      emitDiagnosticEvent("error");
+      startInFlightRef.current = false;
       return false;
     }
 
     if (recognitionRef.current && activeRecognition === recognitionRef.current) {
+      errorRef.current = null;
       setError(null);
       setListening(true);
+      setRecognitionState("listening");
+      startInFlightRef.current = false;
       return true;
     }
 
+    errorRef.current = null;
     setError(null);
 
     if (!recognitionRef.current) {
@@ -178,18 +296,33 @@ export function useSpeechRecognition(
 
       recognition.onstart = () => {
         setListening(true);
+        setRecognitionState("listening");
+        setRetryCount(0);
+        bumpCount("starts");
+        emitDiagnosticEvent("start");
         activeRecognition = recognition;
       };
 
       recognition.onend = () => {
         setListening(false);
+        setRecognitionState("ended");
+        bumpCount("ends");
+        emitDiagnosticEvent("end");
         setInterimTranscript("");
         if (activeRecognition === recognition) {
           activeRecognition = null;
         }
+        if (!shouldAutoRestartRef.current) {
+          return;
+        }
+        restartTimerRef.current = window.setTimeout(() => {
+          void start({ userInitiated: false, autoRestart: true });
+        }, AUTO_RESTART_DELAY_MS);
       };
 
       recognition.onresult = (event) => {
+        bumpCount("results");
+        emitDiagnosticEvent("result");
         let nextFinalPart = "";
 
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -215,38 +348,58 @@ export function useSpeechRecognition(
         if (nextFinalPart) {
           setFinalTranscript((previousFinal) => joinTranscripts(previousFinal, nextFinalPart));
         }
-        setInterimTranscript(nextInterimPart);
+        setInterimTranscript(() => nextInterimPart);
       };
 
       recognition.onerror = (event) => {
         setListening(false);
+        setRecognitionState("error");
+        bumpCount("errors");
 
         if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          shouldAutoRestartRef.current = false;
           const userInitiated = startOptionsRef.current.userInitiated ?? true;
-          setError({
+          const nextError: UseSpeechRecognitionError = {
             code: userInitiated ? "permission-denied" : "gesture-required",
             message: userInitiated
               ? "Microphone access denied. Allow mic in browser settings or type instead."
               : "Tap the mic button to start speaking.",
             originalError: event.error,
-          });
+          };
+          errorRef.current = nextError;
+          setError(nextError);
+          setLastError(nextError);
+          emitDiagnosticEvent("error");
           return;
         }
 
         if (event.error === "audio-capture") {
-          setError({
+          shouldAutoRestartRef.current = false;
+          const nextError: UseSpeechRecognitionError = {
             code: "no-microphone",
             message: "No microphone was found. Connect a microphone and try again.",
             originalError: event.error,
-          });
+          };
+          errorRef.current = nextError;
+          setError(nextError);
+          setLastError(nextError);
+          emitDiagnosticEvent("error");
           return;
         }
 
-        setError({
+        const nextError: UseSpeechRecognitionError = {
           code: "recognition-error",
           message: event.message || "Speech recognition failed. Please try again.",
           originalError: event.error,
-        });
+        };
+        errorRef.current = nextError;
+        setError(nextError);
+        setLastError(nextError);
+        setRetryCount((previous) => previous + 1);
+        if (retryCount >= 2) {
+          shouldAutoRestartRef.current = false;
+        }
+        emitDiagnosticEvent("error");
       };
 
       recognitionRef.current = recognition;
@@ -258,32 +411,60 @@ export function useSpeechRecognition(
 
     try {
       recognitionRef.current.start();
+      startInFlightRef.current = false;
       return true;
     } catch (caughtError) {
+      setRetryCount((previous) => previous + 1);
       const gestureRequiredMessage = normalizeStartErrorMessage(caughtError);
       if (gestureRequiredMessage) {
-        setError({
+        shouldAutoRestartRef.current = false;
+        const nextError: UseSpeechRecognitionError = {
           code: "gesture-required",
           message: gestureRequiredMessage,
-        });
+        };
+        errorRef.current = nextError;
+        setError(nextError);
+        setLastError(nextError);
         setListening(false);
+        setRecognitionState("error");
+        emitDiagnosticEvent("error");
+        startInFlightRef.current = false;
         return false;
       }
 
       if (caughtError instanceof DOMException && caughtError.name === "InvalidStateError") {
+        errorRef.current = null;
         setError(null);
         setListening(true);
+        setRecognitionState("listening");
+        startInFlightRef.current = false;
         return true;
       }
 
-      setError({
+      const nextError: UseSpeechRecognitionError = {
         code: "recognition-error",
         message: "Speech recognition could not be started.",
-      });
+      };
+      errorRef.current = nextError;
+      setError(nextError);
+      setLastError(nextError);
       setListening(false);
+      setRecognitionState("error");
+      emitDiagnosticEvent("error");
+      startInFlightRef.current = false;
       return false;
     }
-  }, [options.continuous, options.interimResults, options.lang, options.maxAlternatives]);
+  }, [
+    clearRestartTimer,
+    options.continuous,
+    options.interimResults,
+    options.lang,
+    options.maxAlternatives,
+    bumpCount,
+    emitDiagnosticEvent,
+    retryCount,
+    setRecognitionState,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -304,10 +485,13 @@ export function useSpeechRecognition(
 
   return {
     listening,
+    state,
+    eventCounts,
     interimTranscript,
     finalTranscript,
     transcript: joinTranscripts(finalTranscript, interimTranscript),
     error,
+    lastError,
     start,
     stop,
     resetTranscript,

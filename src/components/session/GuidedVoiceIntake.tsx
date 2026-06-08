@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSpeechRecognition } from "@/lib/speech-recognition";
+import {
+  isSpeechRecognitionSupported,
+  type SpeechRecognitionDiagnosticEvent,
+  type SpeechRecognitionState,
+  type UseSpeechRecognitionError,
+  useSpeechRecognition,
+} from "@/lib/speech-recognition";
 import { speakText, stopSpeaking } from "@/lib/speech";
 
 type Difficulty = "low" | "medium" | "high";
@@ -75,6 +81,21 @@ type LiveTranscriptCardProps = {
   placeholder: string;
 };
 
+type MicPermissionState = "granted" | "denied" | "prompt" | "unsupported" | "unknown";
+
+type SpeechDiagnosticsStripProps = {
+  browserSupported: boolean;
+  micPermission: MicPermissionState;
+  recognitionState: SpeechRecognitionState;
+  lastError: UseSpeechRecognitionError | null;
+  eventCounts: {
+    starts: number;
+    results: number;
+    errors: number;
+    restarts: number;
+  };
+};
+
 function LiveTranscriptCard({
   listening,
   isPromptSpeaking,
@@ -105,6 +126,69 @@ function LiveTranscriptCard({
   );
 }
 
+function SpeechDiagnosticsStrip({
+  browserSupported,
+  micPermission,
+  recognitionState,
+  lastError,
+  eventCounts,
+}: SpeechDiagnosticsStripProps) {
+  return (
+    <div className="rounded-xl border border-cyan-400/25 bg-slate-950/55 px-3 py-2 text-[11px] text-cyan-100/90">
+      <p className="font-medium text-cyan-100">
+        Extension noise in console is normal - look for Body Doubling status below.
+      </p>
+      <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+        <p>
+          Browser support: <span className="font-semibold">{browserSupported ? "yes" : "no"}</span>
+        </p>
+        <p>
+          Mic permission: <span className="font-semibold">{micPermission}</span>
+        </p>
+        <p>
+          Recognition state: <span className="font-semibold">{recognitionState}</span>
+        </p>
+        <p>
+          Last error:{" "}
+          <span className="font-semibold">
+            {lastError ? `${lastError.code}${lastError.message ? ` - ${lastError.message}` : ""}` : "none"}
+          </span>
+        </p>
+        <p className="sm:col-span-2">
+          Event counter:{" "}
+          <span className="font-semibold">
+            starts {eventCounts.starts} | results {eventCounts.results} | errors {eventCounts.errors} | restarts{" "}
+            {eventCounts.restarts}
+          </span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function getRecognitionFixSteps(errorCode: UseSpeechRecognitionError["code"]): string[] {
+  switch (errorCode) {
+    case "unsupported-browser":
+      return ["Open this page in latest Chrome or Edge.", "Use text input if this browser does not support Web Speech."];
+    case "permission-denied":
+      return [
+        "Click the lock icon in the address bar and allow Microphone.",
+        "Confirm mic access is enabled for this browser in OS privacy settings.",
+        "Reload this tab after updating permissions.",
+      ];
+    case "gesture-required":
+      return ["Tap Start mic directly, then speak.", "Avoid switching tabs before mic starts listening."];
+    case "no-microphone":
+      return ["Connect a microphone and make it the default input device.", "Close other apps that may hold the microphone."];
+    default:
+      return [
+        "Check your internet connection and try Start mic again.",
+        "Close other tabs/apps using the microphone.",
+        "Use text input for this step if speech keeps failing.",
+      ];
+  }
+}
+
 function parseSpokenDuration(transcript: string): number | null {
   const lower = transcript.toLowerCase();
   const match = lower.match(/(\d{1,3})\s*(minutes|minute|mins|min)?\b/);
@@ -130,9 +214,13 @@ export function GuidedVoiceIntake({
   voiceEnabled = true,
   activationTick = 0,
 }: GuidedVoiceIntakeProps) {
+  const speechSupported = useMemo(() => isSpeechRecognitionSupported(), []);
   const [stepIndex, setStepIndex] = useState(0);
   const autoListenArmedRef = useRef(true);
   const [isPromptSpeaking, setIsPromptSpeaking] = useState(false);
+  const [micPermission, setMicPermission] = useState<MicPermissionState>("unknown");
+  const [restartCount, setRestartCount] = useState(0);
+  const [lastDiagnosticEvent, setLastDiagnosticEvent] = useState<SpeechRecognitionDiagnosticEvent | null>(null);
   const currentStep = steps[stepIndex];
   const isFinalStep = stepIndex === steps.length - 1;
   const autoListenTimerRef = useRef<number | null>(null);
@@ -141,12 +229,69 @@ export function GuidedVoiceIntake({
   const lastActivationTickRef = useRef(activationTick);
   const shouldMaintainListeningRef = useRef(false);
 
+  const probeMicPermission = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMicPermission("unsupported");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      setMicPermission("granted");
+    } catch {
+      setMicPermission("denied");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMicPermission("unsupported");
+      return;
+    }
+
+    const permissionsApi = navigator.permissions;
+    if (!permissionsApi?.query) {
+      setMicPermission("unknown");
+      return;
+    }
+
+    let isMounted = true;
+    let permissionStatus: PermissionStatus | null = null;
+
+    permissionsApi
+      .query({ name: "microphone" as PermissionName })
+      .then((status) => {
+        if (!isMounted) return;
+        permissionStatus = status;
+        setMicPermission(status.state as MicPermissionState);
+        status.onchange = () => {
+          setMicPermission(status.state as MicPermissionState);
+        };
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setMicPermission("unknown");
+      });
+
+    return () => {
+      isMounted = false;
+      if (permissionStatus) {
+        permissionStatus.onchange = null;
+      }
+    };
+  }, []);
+
   const {
     listening,
+    state: recognitionState,
+    eventCounts,
     interimTranscript,
     finalTranscript,
     transcript,
     error,
+    lastError,
     start,
     stop,
     resetTranscript,
@@ -155,6 +300,7 @@ export function GuidedVoiceIntake({
     lang: "en-US",
     continuous: true,
     interimResults: true,
+    onDiagnosticEvent: (event) => setLastDiagnosticEvent(event),
   });
 
   const clearAutoListenTimer = useCallback(() => {
@@ -181,14 +327,24 @@ export function GuidedVoiceIntake({
   const beginListening = useCallback(
     (options: { userInitiated?: boolean; reset?: boolean; maintainListening?: boolean } = {}) => {
       clearError();
+      if (options.userInitiated ?? true) {
+        void probeMicPermission();
+      }
       if (options.reset ?? true) {
         resetTranscript();
       }
       shouldMaintainListeningRef.current = options.maintainListening ?? true;
       return start({ userInitiated: options.userInitiated ?? true });
     },
-    [clearError, resetTranscript, start],
+    [clearError, probeMicPermission, resetTranscript, start],
   );
+
+  useEffect(() => {
+    if (!error) return;
+    if (error.code === "permission-denied" || error.code === "no-microphone") {
+      void probeMicPermission();
+    }
+  }, [error, probeMicPermission]);
 
   useEffect(() => {
     if (!voiceEnabled) {
@@ -204,6 +360,7 @@ export function GuidedVoiceIntake({
     clearAutoListenTimer();
     clearRestartListeningTimer();
     clearSilenceCaptureTimer();
+    setRestartCount(0);
     stopSpeaking();
     clearError();
     if (!autoListenArmedRef.current) return;
@@ -268,6 +425,7 @@ export function GuidedVoiceIntake({
     }
     clearRestartListeningTimer();
     restartListeningTimerRef.current = window.setTimeout(() => {
+      setRestartCount((previous) => previous + 1);
       beginListening({ userInitiated: false, reset: false, maintainListening: true });
     }, RESTART_LISTENING_DELAY_MS);
     return clearRestartListeningTimer;
@@ -459,6 +617,19 @@ export function GuidedVoiceIntake({
           />
         </div>
 
+        <SpeechDiagnosticsStrip
+          browserSupported={speechSupported}
+          micPermission={micPermission}
+          recognitionState={recognitionState}
+          lastError={lastError}
+          eventCounts={{
+            starts: eventCounts.starts,
+            results: eventCounts.results,
+            errors: eventCounts.errors,
+            restarts: restartCount,
+          }}
+        />
+
         {currentStep.key === "durationMinutes" && (
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {durationOptions.map((minutes) => {
@@ -537,8 +708,19 @@ export function GuidedVoiceIntake({
           </button>
         </div>
 
-        {error?.message ? (
-          <p className="text-xs text-rose-300">{error.message}</p>
+        {error ? (
+          <div className="rounded-xl border border-rose-300/45 bg-rose-500/15 p-3 text-rose-100">
+            <p className="text-sm font-semibold">Voice recognition failed</p>
+            <p className="mt-1 text-xs">
+              {error.message}
+              {lastDiagnosticEvent?.type ? ` (last event: ${lastDiagnosticEvent.type})` : ""}
+            </p>
+            <div className="mt-2 space-y-1 text-xs">
+              {getRecognitionFixSteps(error.code).map((step) => (
+                <p key={step}>- {step}</p>
+              ))}
+            </div>
+          </div>
         ) : (
           <p className="text-xs text-slate-400">
             {listening

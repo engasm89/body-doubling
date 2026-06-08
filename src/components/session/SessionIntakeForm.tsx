@@ -79,8 +79,8 @@ export function SessionIntakeForm({
             Launch a guided body doubling sprint
           </h2>
           <p className="max-w-2xl text-sm text-slate-300">
-            Speak or type your intent, choose your focus profile, and begin a protected block with AI
-            pacing.
+            Tap the large mic on each prompt, speak your intent, then review the transcript cards before
+            launch.
           </p>
         </div>
 

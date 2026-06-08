@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { isSpeechRecognitionSupported, useSpeechRecognition } from "@/lib/speech-recognition";
 
 type InputMode = "voice" | "text";
@@ -99,7 +99,6 @@ export function VoiceInputField({
     return saved === "text" || saved === "voice" ? saved : "voice";
   });
   const [listeningBaseValue, setListeningBaseValue] = useState("");
-  const [showMicPrompt, setShowMicPrompt] = useState(false);
   const {
     listening,
     transcript,
@@ -118,14 +117,16 @@ export function VoiceInputField({
   const showTextInput = inputMode === "text" || !speechSupported;
   const listeningValue = withSpacing(listeningBaseValue, transcript);
   const renderedValue = listening ? listeningValue : value;
+  const transcriptPreview = (listening ? listeningValue : value).trim();
+  const hasCapturedTranscript = !listening && value.trim().length > 0;
 
   const helperText = useMemo(() => {
     if (!speechSupported) return "Voice input is unavailable in this browser, so text input is enabled.";
     if (inputMode === "text") return "Typing mode is active for this field.";
-    if (listening) return "Listening...";
-    if (showMicPrompt) return "Tap USE MIC to speak.";
-    return "Tap USE MIC to start speaking.";
-  }, [inputMode, listening, showMicPrompt, speechSupported]);
+    if (listening) return "Listening now. Tap again to stop.";
+    if (hasCapturedTranscript) return "Captured. Tap the mic to add more.";
+    return "Tap the mic to speak your answer.";
+  }, [hasCapturedTranscript, inputMode, listening, speechSupported]);
 
   const labelClassName =
     theme === "dark"
@@ -136,6 +137,10 @@ export function VoiceInputField({
       ? "w-full rounded-lg border border-white/20 bg-slate-950 px-3 py-2 text-slate-100 outline-none ring-indigo-400 focus:ring-2"
       : "w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none ring-indigo-500 focus:ring-2";
   const secondaryTextClassName = theme === "dark" ? "text-slate-300" : "text-zinc-600";
+  const swapModeClassName =
+    theme === "dark"
+      ? "w-fit text-xs font-medium text-indigo-200 underline decoration-indigo-300/60 underline-offset-4 transition hover:text-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+      : "w-fit text-xs font-medium text-indigo-700 underline decoration-indigo-400/70 underline-offset-4 transition hover:text-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500";
   const voiceErrorClassName = theme === "dark" ? "text-rose-300" : "text-rose-600";
 
   const startListening = useCallback(() => {
@@ -143,7 +148,6 @@ export function VoiceInputField({
     setListeningBaseValue(value);
     resetTranscript();
     clearError();
-    setShowMicPrompt(false);
     start({ userInitiated: true });
   }, [showTextInput, listening, value, resetTranscript, clearError, start]);
 
@@ -166,76 +170,106 @@ export function VoiceInputField({
     [listeningBaseValue, onChange, onTranscriptPayload, resetTranscript, stop, transcript, value],
   );
 
-  const autoStartListening = useCallback(() => {
-    if (!speechSupported || inputMode !== "voice" || listening) return;
-    setShowMicPrompt(true);
-  }, [speechSupported, inputMode, listening]);
+  const toggleListening = useCallback(() => {
+    if (showTextInput) return;
+    if (listening) {
+      stopListening(true);
+      return;
+    }
+    startListening();
+  }, [listening, showTextInput, startListening, stopListening]);
 
-  const handleInputBlur = useCallback(() => {
-    setShowMicPrompt(false);
-    if (!listening) return;
-    stopListening(true);
-  }, [listening, stopListening]);
+  const handleMicKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleListening();
+      }
+    },
+    [toggleListening],
+  );
 
   return (
     <label className={labelClassName}>
       <span>{label}</span>
-      <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
-        {multiline ? (
-          <textarea
-            name={name}
-            value={renderedValue}
-            onFocus={autoStartListening}
-            onClick={autoStartListening}
-            onBlur={handleInputBlur}
-            onChange={(event) => onChange(event.target.value)}
-            className={inputClassName}
-            placeholder={placeholder}
-            rows={rows}
-            required={required}
-          />
+      <div className="space-y-3">
+        {showTextInput ? (
+          <>
+            {multiline ? (
+              <textarea
+                name={name}
+                value={renderedValue}
+                onChange={(event) => onChange(event.target.value)}
+                className={inputClassName}
+                placeholder={placeholder}
+                rows={rows}
+                required={required}
+              />
+            ) : (
+              <input
+                name={name}
+                value={renderedValue}
+                onChange={(event) => onChange(event.target.value)}
+                className={inputClassName}
+                placeholder={placeholder}
+                required={required}
+              />
+            )}
+          </>
         ) : (
-          <input
-            name={name}
-            value={renderedValue}
-            onFocus={autoStartListening}
-            onClick={autoStartListening}
-            onBlur={handleInputBlur}
-            onChange={(event) => onChange(event.target.value)}
-            className={inputClassName}
-            placeholder={placeholder}
-            required={required}
-          />
+          <div className="space-y-3 rounded-2xl border border-white/15 bg-slate-950/40 p-4 text-center">
+            <button
+              type="button"
+              onClick={toggleListening}
+              onKeyDown={handleMicKeyDown}
+              aria-pressed={listening}
+              aria-label={listening ? `Stop voice input for ${label}` : `Start voice input for ${label}`}
+              className={`relative mx-auto flex h-20 w-20 items-center justify-center rounded-full border text-center text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 ${
+                listening
+                  ? "border-rose-300 bg-rose-500/80 shadow-[0_0_38px_rgba(251,113,133,0.55)]"
+                  : "border-indigo-200/70 bg-indigo-500 shadow-[0_0_38px_rgba(99,102,241,0.55)] hover:bg-indigo-400"
+              }`}
+            >
+              {hasCapturedTranscript && !listening && (
+                <span className="absolute -right-1 -top-1 inline-flex h-6 w-6 items-center justify-center rounded-full border border-emerald-200/70 bg-emerald-500 text-sm text-white shadow-[0_0_18px_rgba(16,185,129,0.45)]">
+                  <svg
+                    viewBox="0 0 16 16"
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5 fill-none stroke-current stroke-[2.4]"
+                  >
+                    <path d="M3.5 8.5 6.6 11.4 12.5 5.2" />
+                  </svg>
+                </span>
+              )}
+              {listening ? "Listening" : "Tap to speak"}
+            </button>
+            <p className={`text-xs ${secondaryTextClassName}`}>{helperText}</p>
+            <div
+              className="rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-left text-sm text-slate-100"
+              role="status"
+              aria-live="polite"
+            >
+              {transcriptPreview || placeholder || "Tap the mic and say your answer."}
+            </div>
+          </div>
         )}
-        {!showTextInput && (
+        {speechSupported && (
           <button
             type="button"
-            onClick={() => (listening ? stopListening(true) : startListening())}
-            aria-pressed={listening}
-            aria-label={listening ? `Stop voice input for ${label}` : `Start voice input for ${label}`}
-            className="h-11 min-w-24 rounded-lg border border-indigo-200/70 bg-indigo-500 px-4 text-xs font-semibold uppercase tracking-wide text-white shadow-[0_0_20px_rgba(99,102,241,0.45)] transition hover:bg-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+            onClick={() => {
+              if (inputMode === "voice") {
+                stopListening(false);
+                setInputMode("text");
+                return;
+              }
+              setInputMode("voice");
+              clearError();
+            }}
+            className={swapModeClassName}
           >
-            {listening ? "Stop mic" : "Use mic"}
+            {inputMode === "voice" ? "Type instead" : "Use voice instead"}
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => {
-            if (inputMode === "voice") {
-              stopListening(false);
-              setShowMicPrompt(false);
-              setInputMode("text");
-              return;
-            }
-            setInputMode("voice");
-            setShowMicPrompt(false);
-            clearError();
-          }}
-          disabled={!speechSupported}
-          className="h-11 rounded-lg border border-white/25 px-3 text-xs font-medium text-slate-200 transition hover:border-indigo-300 hover:bg-indigo-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {inputMode === "voice" ? "Type instead" : "Use voice instead"}
-        </button>
       </div>
       <div
         className={`mt-1 flex items-center gap-2 text-xs ${secondaryTextClassName}`}

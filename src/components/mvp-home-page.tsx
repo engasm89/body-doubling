@@ -428,8 +428,8 @@ export function MvpHomePage() {
                     Set your mission, then lock in
                   </h2>
                   <p className="text-sm text-slate-300">
-                    Mic-first prompts are ready. Speak your plan, then launch your guided body doubling
-                    block.
+                    Tap the big mic on each prompt to speak your plan. Transcripts appear instantly, then
+                    launch your guided body doubling block.
                   </p>
                 </div>
                 {!voiceInputSupported && (

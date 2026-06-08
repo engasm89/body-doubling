@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { VoiceInputField } from "./VoiceInputField";
 
 export type SessionIntakeValues = {
   task: string;
@@ -22,6 +23,18 @@ const defaultValues: SessionIntakeValues = {
   difficulty: "medium",
   firstStep: "",
 };
+
+const durationOptions = [15, 25, 40, 60];
+
+const difficultyOptions: Array<{
+  value: SessionIntakeValues["difficulty"];
+  label: string;
+  hint: string;
+}> = [
+  { value: "low", label: "Cruise", hint: "Light lift" },
+  { value: "medium", label: "Stretch", hint: "Focused push" },
+  { value: "high", label: "Deep", hint: "Heavy cognitive load" },
+];
 
 export function SessionIntakeForm({
   onSubmit,
@@ -52,90 +65,134 @@ export function SessionIntakeForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-      <h2 className="text-lg font-semibold text-zinc-900">Start a focused session</h2>
+    <form
+      onSubmit={handleSubmit}
+      className="relative overflow-hidden rounded-3xl border border-white/15 bg-[color:var(--background)] p-5 text-[color:var(--foreground)] shadow-[0_0_0_1px_rgba(99,102,241,0.28),0_24px_65px_rgba(2,6,23,0.55)] backdrop-blur-xl sm:p-7"
+    >
+      <div className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-indigo-500/20 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-20 -left-16 h-48 w-48 rounded-full bg-cyan-400/15 blur-3xl" />
 
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-zinc-700">Task</span>
-        <input
+      <div className="relative space-y-6">
+        <div className="space-y-3">
+          <p className="text-xs uppercase tracking-[0.24em] text-indigo-300">Your focus companion</p>
+          <h2 className="text-2xl font-semibold text-[color:var(--foreground)] sm:text-3xl">
+            Launch a guided body doubling sprint
+          </h2>
+          <p className="max-w-2xl text-sm text-slate-300">
+            Speak or type your intent, choose your focus profile, and begin a protected block with AI
+            pacing.
+          </p>
+        </div>
+
+        <VoiceInputField
+          label="Focus mission"
+          name="task_title"
           value={values.task}
-          onChange={(event) => setValues((current) => ({ ...current, task: event.target.value }))}
-          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none ring-indigo-500 focus:ring-2"
+          onChange={(task) => setValues((current) => ({ ...current, task }))}
           placeholder="What are you working on?"
           required
+          theme="dark"
         />
-      </label>
 
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-zinc-700">Desired outcome</span>
-        <input
+        <VoiceInputField
+          label="Success signal"
+          name="desired_outcome"
           value={values.desiredOutcome}
-          onChange={(event) =>
-            setValues((current) => ({ ...current, desiredOutcome: event.target.value }))
-          }
-          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none ring-indigo-500 focus:ring-2"
+          onChange={(desiredOutcome) => setValues((current) => ({ ...current, desiredOutcome }))}
           placeholder="What does success look like at the end?"
           required
+          theme="dark"
         />
-      </label>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <label className="block space-y-1">
-          <span className="text-sm font-medium text-zinc-700">Duration (minutes)</span>
-          <input
-            type="number"
-            min={5}
-            max={180}
-            value={values.durationMinutes}
-            onChange={(event) =>
-              setValues((current) => ({
-                ...current,
-                durationMinutes: Number(event.target.value || "0"),
-              }))
-            }
-            className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none ring-indigo-500 focus:ring-2"
-            required
-          />
-        </label>
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-slate-200">Session duration</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {durationOptions.map((minutes) => {
+              const active = values.durationMinutes === minutes;
+              return (
+                <button
+                  key={minutes}
+                  type="button"
+                  onClick={() => setValues((current) => ({ ...current, durationMinutes: minutes }))}
+                  className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${
+                    active
+                      ? "border-cyan-300/75 bg-cyan-400/20 text-cyan-100 shadow-[0_0_24px_rgba(45,212,191,0.3)]"
+                      : "border-white/15 bg-slate-900/70 text-slate-200 hover:border-indigo-300/60 hover:bg-indigo-500/10"
+                  }`}
+                >
+                  {minutes}m
+                </button>
+              );
+            })}
+          </div>
+          <label className="block space-y-1">
+            <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Custom minutes</span>
+            <input
+              type="number"
+              min={5}
+              max={180}
+              value={values.durationMinutes}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  durationMinutes: Number(event.target.value || "0"),
+                }))
+              }
+              className="w-full rounded-xl border border-white/15 bg-slate-950/60 px-3 py-2 text-sm text-white outline-none ring-indigo-500/70 focus:ring-2"
+              required
+            />
+          </label>
+        </div>
 
-        <label className="block space-y-1">
-          <span className="text-sm font-medium text-zinc-700">Difficulty</span>
-          <select
-            value={values.difficulty}
-            onChange={(event) =>
-              setValues((current) => ({
-                ...current,
-                difficulty: event.target.value as SessionIntakeValues["difficulty"],
-              }))
-            }
-            className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none ring-indigo-500 focus:ring-2"
-          >
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-        </label>
-      </div>
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-slate-200">Difficulty profile</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {difficultyOptions.map((option) => {
+              const active = values.difficulty === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() =>
+                    setValues((current) => ({
+                      ...current,
+                      difficulty: option.value,
+                    }))
+                  }
+                  className={`rounded-2xl border px-3 py-3 text-left transition ${
+                    active
+                      ? "border-indigo-300/80 bg-indigo-500/20 shadow-[0_0_30px_rgba(99,102,241,0.28)]"
+                      : "border-white/15 bg-slate-900/70 hover:border-indigo-300/50 hover:bg-indigo-500/10"
+                  }`}
+                >
+                  <p className="text-sm font-semibold text-slate-100">{option.label}</p>
+                  <p className="text-xs text-slate-400">{option.hint}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-zinc-700">First step</span>
-        <textarea
+        <VoiceInputField
+          label="First tiny action"
+          name="first_step"
           value={values.firstStep}
-          onChange={(event) => setValues((current) => ({ ...current, firstStep: event.target.value }))}
-          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none ring-indigo-500 focus:ring-2"
+          onChange={(firstStep) => setValues((current) => ({ ...current, firstStep }))}
           placeholder="What is the very first action?"
+          multiline
           rows={3}
           required
+          theme="dark"
         />
-      </label>
 
-      <button
-        type="submit"
-        disabled={!canSubmit || isSubmitting}
-        className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {isSubmitting ? "Starting..." : "Start session"}
-      </button>
+        <button
+          type="submit"
+          disabled={!canSubmit || isSubmitting}
+          className="w-full rounded-2xl border border-cyan-200/35 bg-gradient-to-r from-indigo-500 via-violet-500 to-cyan-500 px-4 py-3 text-sm font-semibold text-white shadow-[0_0_38px_rgba(129,140,248,0.55)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isSubmitting ? "Syncing your focus lane..." : "Start body doubling session"}
+        </button>
+      </div>
     </form>
   );
 }

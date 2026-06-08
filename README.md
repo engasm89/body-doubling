@@ -5,6 +5,7 @@ Browser-first AI body-doubling coach built with Next.js App Router, Firebase Aut
 ## MVP Includes
 
 - Intake flow: task, done definition, duration, difficulty, first tiny step
+- Voice-first intake fields (tap mic to dictate each response)
 - Strict client session states: `idle -> intake -> active -> check_in -> recovery -> debrief -> complete`
 - Timed check-ins at meaningful intervals (not every minute)
 - Recovery logic for `stuck`, `distracted`, and `done_early`
@@ -55,6 +56,12 @@ npm run dev
 ```
 
 4. Open [http://localhost:3000](http://localhost:3000)
+
+## Voice Input Browser Support
+
+- Text-to-speech coach playback works in modern browsers that support Web Speech synthesis.
+- Voice dictation (speech-to-text) for intake fields requires browser Web Speech recognition support.
+- For local testing, use **Chrome or Edge** and allow microphone permission when prompted.
 
 ## Environment Variables
 

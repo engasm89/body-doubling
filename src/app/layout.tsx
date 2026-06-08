@@ -14,8 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Body Doubling MVP",
-  description: "Stay focused with a guided accountability flow",
+  title: "Body Doubling | AI Focus Companion",
+  description:
+    "Body Doubling is an AI focus companion for accountable co-working sessions that help you get meaningful work done together.",
 };
 
 export default function RootLayout({

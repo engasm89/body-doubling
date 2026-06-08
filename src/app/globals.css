@@ -1,26 +1,200 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+  --background: #060913;
+  --foreground: #d9efff;
+  --surface-glass: rgb(13 21 40 / 58%);
+  --surface-glass-border: rgb(120 232 255 / 24%);
+  --surface-elevated: #0b1630;
+  --accent-primary: #3af2ff;
+  --accent-secondary: #27d7c3;
+  --accent-purple: #a375ff;
+  --accent-glow: 0 0 24px rgb(58 242 255 / 40%);
+  --orb-primary: radial-gradient(
+    circle at 30% 30%,
+    rgb(58 242 255 / 62%),
+    rgb(163 117 255 / 24%) 42%,
+    transparent 68%
+  );
+  --grid-line: rgb(95 233 255 / 8%);
+  --noise-line: rgb(255 255 255 / 3%);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface-glass: var(--surface-glass);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-accent-primary: var(--accent-primary);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-accent-purple: var(--accent-purple);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+body {
+  min-height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), "Inter", "Segoe UI", sans-serif;
+  background-image:
+    radial-gradient(
+      circle at 15% -10%,
+      rgb(58 242 255 / 14%),
+      transparent 42%
+    ),
+    radial-gradient(
+      circle at 85% 0%,
+      rgb(163 117 255 / 12%),
+      transparent 45%
+    );
+  background-attachment: fixed;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      var(--noise-line) 3px
+    );
+  background-size:
+    48px 48px,
+    48px 48px,
+    100% 7px;
+  mask-image: radial-gradient(circle at center, black 28%, transparent 100%);
+  opacity: 0.55;
+}
+
+.glass-surface {
+  background: var(--surface-glass);
+  border: 1px solid var(--surface-glass-border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 9%),
+    0 14px 38px rgb(4 9 23 / 36%);
+}
+
+.accent-glow {
+  box-shadow: var(--accent-glow);
+}
+
+.text-glow {
+  text-shadow: 0 0 18px rgb(58 242 255 / 36%);
+}
+
+.orb-primary {
+  background-image: var(--orb-primary);
+  filter: blur(2px);
+}
+
+.presence-ring {
+  box-shadow:
+    0 0 0 1px rgb(58 242 255 / 32%),
+    0 0 0 7px rgb(39 215 195 / 10%),
+    0 0 38px rgb(58 242 255 / 24%);
+}
+
+.focus-panel {
+  background:
+    linear-gradient(rgb(10 19 40 / 88%), rgb(9 16 35 / 88%)),
+    var(--surface-glass);
+  border: 1px solid rgb(58 242 255 / 18%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 9%),
+    0 0 0 1px rgb(58 242 255 / 8%),
+    0 18px 36px rgb(2 5 18 / 42%);
+}
+
+.accountability-pulse {
+  animation: accountability-pulse 2.8s ease-in-out infinite;
+}
+
+@keyframes accountability-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(58 242 255 / 0%);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgb(58 242 255 / 12%);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes wordmark-glow {
+  0%,
+  100% {
+    text-shadow: 0 0 0 rgb(58 242 255 / 0%);
+  }
+  50% {
+    text-shadow:
+      0 0 18px rgb(58 242 255 / 28%),
+      0 0 32px rgb(163 117 255 / 26%);
+  }
+}
+
+@keyframes aurora-float-one {
+  0%,
+  100% {
+    transform: translate3d(-4%, -2%, 0) scale(1);
+    opacity: 0.35;
+  }
+  50% {
+    transform: translate3d(4%, 3%, 0) scale(1.06);
+    opacity: 0.5;
+  }
+}
+
+@keyframes aurora-float-two {
+  0%,
+  100% {
+    transform: translate3d(3%, 2%, 0) scale(1.04);
+    opacity: 0.32;
+  }
+  50% {
+    transform: translate3d(-3%, -4%, 0) scale(1);
+    opacity: 0.46;
+  }
+}
+
+.brand-wordmark {
+  background: linear-gradient(120deg, #d6f8ff 0%, #3af2ff 45%, #c8afff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: wordmark-glow 6.2s ease-in-out infinite;
+}
+
+.brand-aurora {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  pointer-events: none;
+}
+
+.brand-aurora-one {
+  top: -8rem;
+  left: -5rem;
+  width: 20rem;
+  height: 20rem;
+  background: radial-gradient(circle, rgb(58 242 255 / 24%) 0%, rgb(58 242 255 / 0%) 70%);
+  animation: aurora-float-one 16s ease-in-out infinite;
+}
+
+.brand-aurora-two {
+  right: -4rem;
+  bottom: -9rem;
+  width: 22rem;
+  height: 22rem;
+  background: radial-gradient(circle, rgb(163 117 255 / 24%) 0%, rgb(163 117 255 / 0%) 70%);
+  animation: aurora-float-two 18s ease-in-out infinite;
 }

@@ -8,3 +8,5 @@ export { CoachMessage } from "./CoachMessage";
 export { DebriefForm } from "./DebriefForm";
 export type { DebriefValues } from "./DebriefForm";
 export { VoiceToggle } from "./VoiceToggle";
+export { VoiceInputField } from "./VoiceInputField";
+export { isSpeechRecognitionSupported } from "./VoiceInputField";

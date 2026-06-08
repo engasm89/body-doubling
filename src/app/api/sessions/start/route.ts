@@ -4,16 +4,30 @@ import type { SessionInput } from "@/types/session";
 
 export const runtime = "nodejs";
 
-function isStartPayload(value: unknown): value is SessionInput & { userId: string } {
+type StartPayload = SessionInput & {
+  userId: string;
+  task_title?: string;
+  desired_outcome?: string;
+  duration?: number;
+  difficulty?: SessionInput["difficultyLevel"];
+  first_step?: string;
+};
+
+function isStartPayload(value: unknown): value is StartPayload {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
+  const taskTitle = body.taskTitle ?? body.task_title;
+  const desiredOutcome = body.desiredOutcome ?? body.desired_outcome;
+  const durationMinutes = body.durationMinutes ?? body.duration;
+  const difficultyLevel = body.difficultyLevel ?? body.difficulty;
+  const firstStep = body.firstStep ?? body.first_step;
   return (
     typeof body.userId === "string" &&
-    typeof body.taskTitle === "string" &&
-    typeof body.desiredOutcome === "string" &&
-    typeof body.durationMinutes === "number" &&
-    typeof body.difficultyLevel === "string" &&
-    typeof body.firstStep === "string"
+    typeof taskTitle === "string" &&
+    typeof desiredOutcome === "string" &&
+    typeof durationMinutes === "number" &&
+    typeof difficultyLevel === "string" &&
+    typeof firstStep === "string"
   );
 }
 
@@ -24,14 +38,20 @@ export async function POST(request: Request) {
       return Response.json({ error: "Invalid payload." }, { status: 400 });
     }
 
+    const taskTitle = (body.taskTitle ?? body.task_title) as string;
+    const desiredOutcome = (body.desiredOutcome ?? body.desired_outcome) as string;
+    const durationMinutes = (body.durationMinutes ?? body.duration) as number;
+    const difficultyLevel = (body.difficultyLevel ?? body.difficulty) as string;
+    const firstStep = (body.firstStep ?? body.first_step) as string;
+
     const input: SessionInput = {
-      taskTitle: body.taskTitle.trim(),
-      desiredOutcome: body.desiredOutcome.trim(),
-      durationMinutes: Math.max(10, Math.min(90, Math.round(body.durationMinutes))),
-      difficultyLevel: ["low", "medium", "high"].includes(body.difficultyLevel)
-        ? (body.difficultyLevel as SessionInput["difficultyLevel"])
+      taskTitle: taskTitle.trim(),
+      desiredOutcome: desiredOutcome.trim(),
+      durationMinutes: Math.max(10, Math.min(90, Math.round(durationMinutes))),
+      difficultyLevel: ["low", "medium", "high"].includes(difficultyLevel)
+        ? (difficultyLevel as SessionInput["difficultyLevel"])
         : "medium",
-      firstStep: body.firstStep.trim(),
+      firstStep: firstStep.trim(),
     };
 
     const checkInSchedule = buildCheckInSchedule(input.durationMinutes);

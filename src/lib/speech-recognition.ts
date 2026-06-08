@@ -62,7 +62,9 @@ type BrowserSpeechRecognitionWindow = Window & {
 export type UseSpeechRecognitionErrorCode =
   | "unsupported-browser"
   | "permission-denied"
+  | "gesture-required"
   | "no-microphone"
+  | "already-listening"
   | "recognition-error";
 
 export type UseSpeechRecognitionError = {
@@ -78,17 +80,32 @@ export type UseSpeechRecognitionOptions = {
   maxAlternatives?: number;
 };
 
+export type SpeechRecognitionStartOptions = {
+  userInitiated?: boolean;
+};
+
 export type UseSpeechRecognitionReturn = {
   listening: boolean;
   interimTranscript: string;
   finalTranscript: string;
   transcript: string;
   error: UseSpeechRecognitionError | null;
-  start: () => boolean;
+  start: (options?: SpeechRecognitionStartOptions) => boolean;
   stop: () => void;
   resetTranscript: () => void;
   clearError: () => void;
 };
+
+let activeRecognition: BrowserSpeechRecognition | null = null;
+
+function normalizeStartErrorMessage(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const lowerMessage = error.message.toLowerCase();
+  if (lowerMessage.includes("gesture") || lowerMessage.includes("user activation")) {
+    return "Tap the mic button to start speaking.";
+  }
+  return null;
+}
 
 function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
   if (typeof window === "undefined") {
@@ -117,6 +134,7 @@ export function useSpeechRecognition(
   const [finalTranscript, setFinalTranscript] = useState("");
   const [error, setError] = useState<UseSpeechRecognitionError | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const startOptionsRef = useRef<SpeechRecognitionStartOptions>({ userInitiated: true });
 
   const resetTranscript = useCallback(() => {
     setInterimTranscript("");
@@ -131,7 +149,8 @@ export function useSpeechRecognition(
     recognitionRef.current?.stop();
   }, []);
 
-  const start = useCallback((): boolean => {
+  const start = useCallback((startOptions: SpeechRecognitionStartOptions = {}): boolean => {
+    startOptionsRef.current = { userInitiated: startOptions.userInitiated ?? true };
     const Recognition = getSpeechRecognitionConstructor();
     if (!Recognition) {
       setError({
@@ -140,6 +159,12 @@ export function useSpeechRecognition(
       });
       setListening(false);
       return false;
+    }
+
+    if (recognitionRef.current && activeRecognition === recognitionRef.current) {
+      setError(null);
+      setListening(true);
+      return true;
     }
 
     setError(null);
@@ -153,11 +178,15 @@ export function useSpeechRecognition(
 
       recognition.onstart = () => {
         setListening(true);
+        activeRecognition = recognition;
       };
 
       recognition.onend = () => {
         setListening(false);
         setInterimTranscript("");
+        if (activeRecognition === recognition) {
+          activeRecognition = null;
+        }
       };
 
       recognition.onresult = (event) => {
@@ -186,9 +215,12 @@ export function useSpeechRecognition(
         setListening(false);
 
         if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          const userInitiated = startOptionsRef.current.userInitiated ?? true;
           setError({
-            code: "permission-denied",
-            message: "Microphone permission was denied. Enable mic access and try again.",
+            code: userInitiated ? "permission-denied" : "gesture-required",
+            message: userInitiated
+              ? "Microphone access denied. Allow mic in browser settings or type instead."
+              : "Tap the mic button to start speaking.",
             originalError: event.error,
           });
           return;
@@ -213,10 +245,30 @@ export function useSpeechRecognition(
       recognitionRef.current = recognition;
     }
 
+    if (activeRecognition && activeRecognition !== recognitionRef.current) {
+      activeRecognition.stop();
+    }
+
     try {
       recognitionRef.current.start();
       return true;
-    } catch {
+    } catch (caughtError) {
+      const gestureRequiredMessage = normalizeStartErrorMessage(caughtError);
+      if (gestureRequiredMessage) {
+        setError({
+          code: "gesture-required",
+          message: gestureRequiredMessage,
+        });
+        setListening(false);
+        return false;
+      }
+
+      if (caughtError instanceof DOMException && caughtError.name === "InvalidStateError") {
+        setError(null);
+        setListening(true);
+        return true;
+      }
+
       setError({
         code: "recognition-error",
         message: "Speech recognition could not be started.",
@@ -236,6 +288,9 @@ export function useSpeechRecognition(
       recognition.onresult = null;
       recognition.onerror = null;
       recognition.abort();
+      if (activeRecognition === recognition) {
+        activeRecognition = null;
+      }
       recognitionRef.current = null;
     };
   }, []);

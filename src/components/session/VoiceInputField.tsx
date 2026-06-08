@@ -99,6 +99,7 @@ export function VoiceInputField({
     return saved === "text" || saved === "voice" ? saved : "voice";
   });
   const [listeningBaseValue, setListeningBaseValue] = useState("");
+  const [showMicPrompt, setShowMicPrompt] = useState(false);
   const {
     listening,
     transcript,
@@ -121,8 +122,10 @@ export function VoiceInputField({
   const helperText = useMemo(() => {
     if (!speechSupported) return "Voice input is unavailable in this browser, so text input is enabled.";
     if (inputMode === "text") return "Typing mode is active for this field.";
-    return listening ? "Listening..." : "Click or focus the field to start listening.";
-  }, [inputMode, listening, speechSupported]);
+    if (listening) return "Listening...";
+    if (showMicPrompt) return "Tap USE MIC to speak.";
+    return "Tap USE MIC to start speaking.";
+  }, [inputMode, listening, showMicPrompt, speechSupported]);
 
   const labelClassName =
     theme === "dark"
@@ -140,7 +143,8 @@ export function VoiceInputField({
     setListeningBaseValue(value);
     resetTranscript();
     clearError();
-    start();
+    setShowMicPrompt(false);
+    start({ userInitiated: true });
   }, [showTextInput, listening, value, resetTranscript, clearError, start]);
 
   const stopListening = useCallback(
@@ -164,10 +168,11 @@ export function VoiceInputField({
 
   const autoStartListening = useCallback(() => {
     if (!speechSupported || inputMode !== "voice" || listening) return;
-    startListening();
-  }, [speechSupported, inputMode, listening, startListening]);
+    setShowMicPrompt(true);
+  }, [speechSupported, inputMode, listening]);
 
   const handleInputBlur = useCallback(() => {
+    setShowMicPrompt(false);
     if (!listening) return;
     stopListening(true);
   }, [listening, stopListening]);
@@ -208,7 +213,7 @@ export function VoiceInputField({
             onClick={() => (listening ? stopListening(true) : startListening())}
             aria-pressed={listening}
             aria-label={listening ? `Stop voice input for ${label}` : `Start voice input for ${label}`}
-            className="h-11 min-w-11 rounded-lg border border-indigo-300/50 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-wide text-indigo-200 transition hover:bg-indigo-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+            className="h-11 min-w-24 rounded-lg border border-indigo-200/70 bg-indigo-500 px-4 text-xs font-semibold uppercase tracking-wide text-white shadow-[0_0_20px_rgba(99,102,241,0.45)] transition hover:bg-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
           >
             {listening ? "Stop mic" : "Use mic"}
           </button>
@@ -218,10 +223,12 @@ export function VoiceInputField({
           onClick={() => {
             if (inputMode === "voice") {
               stopListening(false);
+              setShowMicPrompt(false);
               setInputMode("text");
               return;
             }
             setInputMode("voice");
+            setShowMicPrompt(false);
             clearError();
           }}
           disabled={!speechSupported}

@@ -1,22 +1,22 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SpeakingOrb } from "@/components/speaking-orb";
 import { CheckInButtons } from "@/components/session/CheckInButtons";
 import { CoachMessage } from "@/components/session/CoachMessage";
+import { GuidedVoiceIntake } from "@/components/session/GuidedVoiceIntake";
 import { SessionTimer } from "@/components/session/SessionTimer";
-import {
-  VoiceInputField,
-  isSpeechRecognitionSupported,
-} from "@/components/session/VoiceInputField";
+import { isSpeechRecognitionSupported } from "@/components/session/VoiceInputField";
 import { useAuth } from "@/context/auth-context";
 import { useSessionStateContext } from "@/context/session-state-context";
+import { useSpeechRecognition } from "@/lib/speech-recognition";
 import type { CheckInResponse } from "@/lib/session/state-machine";
 import { speakText, stopSpeaking } from "@/lib/speech";
 import type { CheckInResponseState } from "@/types/session";
 
 const DEFAULT_DURATION = 25;
 type Difficulty = "low" | "medium" | "high";
+type IntakeInputMode = "text" | "voice";
 const intakeDurations = [15, 25, 40, 60];
 const intakeDifficulties: Array<{ value: Difficulty; label: string; hint: string }> = [
   { value: "low", label: "Cruise", hint: "Light lift" },
@@ -57,6 +57,17 @@ function buildIntakeApiPayload(input: {
   };
 }
 
+const INPUT_MODE_STORAGE_KEY = "body-doubling-input-mode";
+
+function parseVoiceCheckInResponse(transcript: string): CheckInResponseState | null {
+  const lower = transcript.toLowerCase();
+  if (/\b(done|finished|complete)\b/.test(lower)) return "done_early";
+  if (/\b(stuck|blocked)\b/.test(lower)) return "stuck";
+  if (/\b(distracted|drifted|off track)\b/.test(lower)) return "distracted";
+  if (/\b(on track|focused|good|steady)\b/.test(lower)) return "on_track";
+  return null;
+}
+
 export function MvpHomePage() {
   const { user, loading } = useAuth();
   const {
@@ -75,6 +86,13 @@ export function MvpHomePage() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [speaking, setSpeaking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [intakeInputMode, setIntakeInputMode] = useState<IntakeInputMode>(() => {
+    if (typeof window === "undefined") return "text";
+    const saved = window.localStorage.getItem(INPUT_MODE_STORAGE_KEY);
+    const defaultMode = saved === "voice" || saved === "text" ? saved : "text";
+    return !isSpeechRecognitionSupported() && defaultMode === "voice" ? "text" : defaultMode;
+  });
+  const [activeSessionInputMode, setActiveSessionInputMode] = useState<IntakeInputMode>("text");
   const [coachMessage, setCoachMessage] = useState(
     "Start a focus block. I will stay present and support accountability at key moments.",
   );
@@ -89,7 +107,18 @@ export function MvpHomePage() {
   const [debriefFinished, setDebriefFinished] = useState("");
   const [debriefBlocked, setDebriefBlocked] = useState("");
   const [debriefNextStep, setDebriefNextStep] = useState("");
-  const [debriefInputMode, setDebriefInputMode] = useState<"voice" | "text">("voice");
+  const lastSpokenCoachMessageRef = useRef("");
+  const promptedPhaseRef = useRef<string | null>(null);
+
+  const {
+    listening: checkInVoiceListening,
+    transcript: checkInVoiceTranscript,
+    error: checkInVoiceError,
+    start: startCheckInVoice,
+    stop: stopCheckInVoice,
+    resetTranscript: resetCheckInVoiceTranscript,
+    clearError: clearCheckInVoiceError,
+  } = useSpeechRecognition({ lang: "en-US", continuous: true, interimResults: true });
 
   const timerIsRunning = useMemo(
     () => phase === "active" || phase === "check_in" || phase === "recovery",
@@ -102,20 +131,70 @@ export function MvpHomePage() {
     () => (typeof window !== "undefined" ? isSpeechRecognitionSupported() : false),
     [],
   );
+  const displayedCoachMessage =
+    phase === "check_in"
+      ? "Presence check-in. Are you on track, stuck, distracted, or done early?"
+      : coachMessage;
+  const parsedVoiceCheckIn = parseVoiceCheckInResponse(checkInVoiceTranscript);
 
-  const maybeSpeak = (text: string) => {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(INPUT_MODE_STORAGE_KEY, intakeInputMode);
+  }, [intakeInputMode]);
+
+  const maybeSpeak = useCallback((text: string) => {
     if (!voiceEnabled || typeof window === "undefined") return;
     speakText(text, {
       onStart: () => setSpeaking(true),
       onEnd: () => setSpeaking(false),
       onError: () => setSpeaking(false),
     });
-  };
+  }, [voiceEnabled]);
 
-  const displayedCoachMessage =
-    phase === "check_in"
-      ? "Presence check-in. Are you on track, stuck, distracted, or done early?"
-      : coachMessage;
+  useEffect(() => {
+    if (!voiceEnabled || activeSessionInputMode !== "voice") {
+      lastSpokenCoachMessageRef.current = displayedCoachMessage;
+      return;
+    }
+
+    const shouldAutoSpeakPhase =
+      phase === "active" || phase === "check_in" || phase === "recovery" || phase === "debrief";
+    const isNewMessage =
+      displayedCoachMessage.trim().length > 0 &&
+      displayedCoachMessage !== lastSpokenCoachMessageRef.current;
+
+    if (shouldAutoSpeakPhase && isNewMessage) {
+      maybeSpeak(displayedCoachMessage);
+    }
+
+    lastSpokenCoachMessageRef.current = displayedCoachMessage;
+  }, [activeSessionInputMode, displayedCoachMessage, maybeSpeak, phase, voiceEnabled]);
+
+  useEffect(() => {
+    if (phase !== "check_in" && phase !== "debrief") {
+      promptedPhaseRef.current = null;
+      return;
+    }
+
+    if (!voiceEnabled || activeSessionInputMode !== "voice") return;
+    if (promptedPhaseRef.current === phase) return;
+
+    if (phase === "check_in") {
+      maybeSpeak("Presence check-in. Say on track, stuck, distracted, or done early.");
+    } else if (phase === "debrief") {
+      maybeSpeak(
+        "Debrief time. What was finished, what blocked progress, and what is your best next step?",
+      );
+    }
+    promptedPhaseRef.current = phase;
+  }, [activeSessionInputMode, maybeSpeak, phase, voiceEnabled]);
+
+  useEffect(() => {
+    if (phase === "check_in") return;
+    stopCheckInVoice();
+    resetCheckInVoiceTranscript();
+    clearCheckInVoiceError();
+  }, [clearCheckInVoiceError, phase, resetCheckInVoiceTranscript, stopCheckInVoice]);
 
   const startSession = async () => {
     if (!user) {
@@ -179,8 +258,8 @@ export function MvpHomePage() {
         sessionId: startData.sessionId,
         checkInSchedule: startData.checkInSchedule,
       });
+      setActiveSessionInputMode(intakeInputMode);
       setCoachMessage(kickoffText);
-      maybeSpeak(kickoffText);
     } catch {
       setErrorMessage("Could not start the session. Check Firebase server env configuration.");
     } finally {
@@ -212,7 +291,6 @@ export function MvpHomePage() {
       const payload = (await response.json()) as { response?: string };
       const message = payload.response ?? "Reset and take one tiny action.";
       setCoachMessage(message);
-      maybeSpeak(message);
       submitCheckInResponse(responseState as CheckInResponse);
     } catch {
       setErrorMessage("Check-in failed.");
@@ -281,7 +359,6 @@ export function MvpHomePage() {
       const payload = (await response.json()) as { debriefSummary?: string };
       const message = payload.debriefSummary ?? "Debrief captured. Session complete.";
       setCoachMessage(message);
-      maybeSpeak(message);
       completeDebrief();
     } catch {
       setErrorMessage("Could not save debrief.");
@@ -296,7 +373,6 @@ export function MvpHomePage() {
     setDebriefFinished("");
     setDebriefBlocked("");
     setDebriefNextStep("");
-    setDebriefInputMode("voice");
     setErrorMessage("");
     resetSession();
     beginIntake();
@@ -411,141 +487,195 @@ export function MvpHomePage() {
           )}
 
           {phase === "intake" && (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                startSession();
-              }}
-              className="relative overflow-hidden rounded-3xl border border-white/15 bg-slate-950/50 p-4 shadow-[0_0_0_1px_rgba(99,102,241,0.24),0_20px_60px_rgba(2,6,23,0.45)] sm:p-6"
-            >
-              <div className="pointer-events-none absolute -right-20 -top-20 h-48 w-48 rounded-full bg-indigo-500/15 blur-3xl" />
-              <div className="pointer-events-none absolute -bottom-16 -left-14 h-44 w-44 rounded-full bg-cyan-400/10 blur-3xl" />
-
-              <div className="relative grid gap-5">
-                <div className="space-y-2">
-                  <p className="text-xs uppercase tracking-[0.22em] text-indigo-300">Your focus companion</p>
-                  <h2 className="text-xl font-semibold text-white sm:text-2xl">
-                    Set your mission, then lock in
-                  </h2>
-                  <p className="text-sm text-slate-300">
-                    Tap the big mic on each prompt to speak your plan. Transcripts appear instantly, then
-                    launch your guided body doubling block.
-                  </p>
+            <div className="grid gap-4">
+              <section className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                <p className="text-xs uppercase tracking-[0.22em] text-indigo-300">Input mode</p>
+                <p className="mt-1 text-sm text-slate-300">
+                  Choose how this session intake runs: keyboard only or full guided voice.
+                </p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setIntakeInputMode("text")}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      intakeInputMode === "text"
+                        ? "border-indigo-300/80 bg-indigo-500/15 shadow-[0_0_30px_rgba(99,102,241,0.22)]"
+                        : "border-white/15 bg-slate-900/70 hover:border-indigo-300/50 hover:bg-indigo-500/10"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-slate-100">Text mode</p>
+                    <p className="mt-1 text-xs text-slate-300">I&apos;ll type my answers</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIntakeInputMode("voice")}
+                    disabled={!voiceInputSupported}
+                    className={`rounded-2xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${
+                      intakeInputMode === "voice"
+                        ? "border-cyan-300/80 bg-cyan-500/15 shadow-[0_0_30px_rgba(45,212,191,0.24)]"
+                        : "border-white/15 bg-slate-900/70 hover:border-cyan-300/50 hover:bg-cyan-500/10"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-slate-100">Full voice mode</p>
+                    <p className="mt-1 text-xs text-slate-300">Talk me through it</p>
+                  </button>
                 </div>
                 {!voiceInputSupported && (
-                  <p className="rounded-lg border border-amber-300/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
-                    Voice unavailable — type your answers
+                  <p className="mt-3 rounded-lg border border-amber-300/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+                    Voice input is unavailable in this browser, so Text mode is active.
                   </p>
                 )}
+              </section>
 
-                <VoiceInputField
-                  label="Focus mission"
-                  name="task_title"
-                  value={taskTitle}
-                  onChange={setTaskTitle}
-                  placeholder="Ship onboarding copy"
-                  theme="dark"
-                  required
-                  onTranscriptPayload={(payload) => {
-                    if (payload.task_title) setTaskTitle(payload.task_title);
-                    if (payload.desired_outcome) setDesiredOutcome(payload.desired_outcome);
-                    if (payload.first_step) setFirstStep(payload.first_step);
-                    if (payload.difficulty) setDifficultyLevel(payload.difficulty);
-                    if (payload.duration) {
-                      setDurationMinutes(Math.max(10, Math.min(90, Math.round(payload.duration))));
-                    }
+              {intakeInputMode === "voice" && voiceInputSupported ? (
+                <GuidedVoiceIntake
+                  values={{
+                    taskTitle,
+                    desiredOutcome,
+                    durationMinutes,
+                    difficultyLevel,
+                    firstStep,
                   }}
+                  onValuesChange={(nextValues) => {
+                    setTaskTitle(nextValues.taskTitle);
+                    setDesiredOutcome(nextValues.desiredOutcome);
+                    setDurationMinutes(nextValues.durationMinutes);
+                    setDifficultyLevel(nextValues.difficultyLevel);
+                    setFirstStep(nextValues.firstStep);
+                  }}
+                  onSubmit={startSession}
+                  isSubmitting={busy || loading}
+                  voiceEnabled={voiceEnabled}
                 />
-
-                <VoiceInputField
-                  label="Success signal"
-                  name="desired_outcome"
-                  value={desiredOutcome}
-                  onChange={setDesiredOutcome}
-                  placeholder="Merged and reviewed content"
-                  theme="dark"
-                  required
-                />
-
-                <div className="space-y-3">
-                  <p className="text-sm font-medium text-slate-200">Session duration</p>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {intakeDurations.map((minutes) => {
-                      const active = durationMinutes === minutes;
-                      return (
-                        <button
-                          key={minutes}
-                          type="button"
-                          onClick={() => setDurationMinutes(minutes)}
-                          className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${
-                            active
-                              ? "border-cyan-300/75 bg-cyan-400/20 text-cyan-100 shadow-[0_0_24px_rgba(45,212,191,0.3)]"
-                              : "border-white/15 bg-slate-900/70 text-slate-200 hover:border-indigo-300/60 hover:bg-indigo-500/10"
-                          }`}
-                        >
-                          {minutes}m
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <label className="block space-y-1">
-                    <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Custom minutes</span>
-                    <input
-                      type="number"
-                      min={10}
-                      max={90}
-                      value={durationMinutes}
-                      onChange={(event) => setDurationMinutes(Number(event.target.value || "0"))}
-                      className="w-full rounded-xl border border-white/15 bg-slate-950/60 px-3 py-2 text-sm text-white outline-none ring-indigo-500/70 focus:ring-2"
-                    />
-                  </label>
-                </div>
-
-                <div className="space-y-3">
-                  <p className="text-sm font-medium text-slate-200">Difficulty profile</p>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    {intakeDifficulties.map((option) => {
-                      const active = difficultyLevel === option.value;
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => setDifficultyLevel(option.value)}
-                          className={`rounded-2xl border px-3 py-3 text-left transition ${
-                            active
-                              ? "border-indigo-300/80 bg-indigo-500/20 shadow-[0_0_30px_rgba(99,102,241,0.28)]"
-                              : "border-white/15 bg-slate-900/70 hover:border-indigo-300/50 hover:bg-indigo-500/10"
-                          }`}
-                        >
-                          <p className="text-sm font-semibold text-slate-100">{option.label}</p>
-                          <p className="text-xs text-slate-400">{option.hint}</p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              <div className="relative mt-5 grid gap-5">
-                <VoiceInputField
-                  label="First tiny action"
-                  name="first_step"
-                  value={firstStep}
-                  onChange={setFirstStep}
-                  placeholder="Open doc and draft first bullet"
-                  theme="dark"
-                  required
-                />
-
-                <button
-                  type="submit"
-                  disabled={busy || loading}
-                  className="rounded-2xl border border-cyan-200/35 bg-gradient-to-r from-indigo-500 via-violet-500 to-cyan-500 px-4 py-3 font-semibold text-white shadow-[0_0_38px_rgba(129,140,248,0.55)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              ) : (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    startSession();
+                  }}
+                  className="relative overflow-hidden rounded-3xl border border-white/15 bg-slate-950/50 p-4 shadow-[0_0_0_1px_rgba(99,102,241,0.24),0_20px_60px_rgba(2,6,23,0.45)] sm:p-6"
                 >
-                  {busy ? "Starting..." : "Start body doubling session"}
-                </button>
-              </div>
-            </form>
+                  <div className="pointer-events-none absolute -right-20 -top-20 h-48 w-48 rounded-full bg-indigo-500/15 blur-3xl" />
+                  <div className="pointer-events-none absolute -bottom-16 -left-14 h-44 w-44 rounded-full bg-cyan-400/10 blur-3xl" />
+
+                  <div className="relative grid gap-5">
+                    <div className="space-y-2">
+                      <p className="text-xs uppercase tracking-[0.22em] text-indigo-300">Text mode</p>
+                      <h2 className="text-xl font-semibold text-white sm:text-2xl">
+                        Type your mission, then lock in
+                      </h2>
+                      <p className="text-sm text-slate-300">
+                        Plain text intake with no per-field microphones.
+                      </p>
+                    </div>
+
+                    <label className="grid gap-1 text-sm text-slate-100">
+                      <span>Focus mission</span>
+                      <input
+                        name="task_title"
+                        value={taskTitle}
+                        onChange={(event) => setTaskTitle(event.target.value)}
+                        placeholder="Ship onboarding copy"
+                        className="w-full rounded-lg border border-white/20 bg-slate-950 px-3 py-2 text-slate-100 outline-none ring-indigo-400 focus:ring-2"
+                        required
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-sm text-slate-100">
+                      <span>Success signal</span>
+                      <textarea
+                        name="desired_outcome"
+                        value={desiredOutcome}
+                        onChange={(event) => setDesiredOutcome(event.target.value)}
+                        placeholder="Merged and reviewed content"
+                        className="w-full rounded-lg border border-white/20 bg-slate-950 px-3 py-2 text-slate-100 outline-none ring-indigo-400 focus:ring-2"
+                        rows={3}
+                        required
+                      />
+                    </label>
+
+                    <div className="space-y-3">
+                      <p className="text-sm font-medium text-slate-200">Session duration</p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {intakeDurations.map((minutes) => {
+                          const active = durationMinutes === minutes;
+                          return (
+                            <button
+                              key={minutes}
+                              type="button"
+                              onClick={() => setDurationMinutes(minutes)}
+                              className={`rounded-xl border px-3 py-2 text-sm font-medium transition ${
+                                active
+                                  ? "border-cyan-300/75 bg-cyan-400/20 text-cyan-100 shadow-[0_0_24px_rgba(45,212,191,0.3)]"
+                                  : "border-white/15 bg-slate-900/70 text-slate-200 hover:border-indigo-300/60 hover:bg-indigo-500/10"
+                              }`}
+                            >
+                              {minutes}m
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <label className="block space-y-1">
+                        <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Custom minutes</span>
+                        <input
+                          type="number"
+                          min={10}
+                          max={90}
+                          value={durationMinutes}
+                          onChange={(event) => setDurationMinutes(Number(event.target.value || "0"))}
+                          className="w-full rounded-xl border border-white/15 bg-slate-950/60 px-3 py-2 text-sm text-white outline-none ring-indigo-500/70 focus:ring-2"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="space-y-3">
+                      <p className="text-sm font-medium text-slate-200">Difficulty profile</p>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        {intakeDifficulties.map((option) => {
+                          const active = difficultyLevel === option.value;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setDifficultyLevel(option.value)}
+                              className={`rounded-2xl border px-3 py-3 text-left transition ${
+                                active
+                                  ? "border-indigo-300/80 bg-indigo-500/20 shadow-[0_0_30px_rgba(99,102,241,0.28)]"
+                                  : "border-white/15 bg-slate-900/70 hover:border-indigo-300/50 hover:bg-indigo-500/10"
+                              }`}
+                            >
+                              <p className="text-sm font-semibold text-slate-100">{option.label}</p>
+                              <p className="text-xs text-slate-400">{option.hint}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <label className="grid gap-1 text-sm text-slate-100">
+                      <span>First tiny action</span>
+                      <textarea
+                        name="first_step"
+                        value={firstStep}
+                        onChange={(event) => setFirstStep(event.target.value)}
+                        placeholder="Open doc and draft first bullet"
+                        className="w-full rounded-lg border border-white/20 bg-slate-950 px-3 py-2 text-slate-100 outline-none ring-indigo-400 focus:ring-2"
+                        rows={3}
+                        required
+                      />
+                    </label>
+
+                    <button
+                      type="submit"
+                      disabled={busy || loading}
+                      className="rounded-2xl border border-cyan-200/35 bg-gradient-to-r from-indigo-500 via-violet-500 to-cyan-500 px-4 py-3 font-semibold text-white shadow-[0_0_38px_rgba(129,140,248,0.55)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {busy ? "Starting..." : "Start body doubling session"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
           )}
 
           {phase === "active" && (
@@ -566,6 +696,51 @@ export function MvpHomePage() {
           {phase === "check_in" && (
             <div className="space-y-3">
               <p className="text-sm text-slate-300">How is your focus block going right now?</p>
+              {activeSessionInputMode === "voice" && voiceInputSupported && (
+                <div className="space-y-2 rounded-2xl border border-indigo-300/25 bg-indigo-500/10 p-3">
+                  <p className="text-xs uppercase tracking-[0.14em] text-indigo-200">Voice check-in</p>
+                  <div className="grid gap-3 sm:grid-cols-[auto_1fr] sm:items-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (checkInVoiceListening) {
+                          stopCheckInVoice();
+                          return;
+                        }
+                        clearCheckInVoiceError();
+                        resetCheckInVoiceTranscript();
+                        startCheckInVoice({ userInitiated: true });
+                      }}
+                      className={`mx-auto flex h-20 w-20 items-center justify-center rounded-full border text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition ${
+                        checkInVoiceListening
+                          ? "border-rose-300 bg-rose-500/80 shadow-[0_0_32px_rgba(251,113,133,0.5)]"
+                          : "border-indigo-200/70 bg-indigo-500 shadow-[0_0_32px_rgba(99,102,241,0.5)] hover:bg-indigo-400"
+                      }`}
+                    >
+                      {checkInVoiceListening ? "Stop" : "Tap mic"}
+                    </button>
+                    <div className="rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm text-slate-100">
+                      {checkInVoiceTranscript.trim() || "Say: on track, stuck, distracted, or done early."}
+                    </div>
+                  </div>
+                  {parsedVoiceCheckIn && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        handleCheckIn(parsedVoiceCheckIn);
+                        resetCheckInVoiceTranscript();
+                      }}
+                      className="rounded-lg border border-cyan-200/40 bg-cyan-500/20 px-3 py-2 text-sm font-medium text-cyan-100 transition hover:bg-cyan-500/30 disabled:opacity-60"
+                    >
+                      Use voice response: {parsedVoiceCheckIn.replace("_", " ")}
+                    </button>
+                  )}
+                  {checkInVoiceError?.message && (
+                    <p className="text-xs text-rose-300">{checkInVoiceError.message}</p>
+                  )}
+                </div>
+              )}
               <CheckInButtons onSelect={handleCheckIn} disabled={busy} />
             </div>
           )}
@@ -595,35 +770,27 @@ export function MvpHomePage() {
 
           {phase === "debrief" && (
             <div className="grid gap-3">
-              <div className="rounded-xl border border-indigo-400/25 bg-indigo-500/10 p-3 text-sm text-indigo-100">
-                Voice-first debrief works best for accountability. Speak your recap first, then type
-                concise notes.
-              </div>
-
-              <div className="inline-flex w-fit rounded-lg border border-white/15 bg-slate-950/70 p-1 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setDebriefInputMode("voice")}
-                  className={`rounded-md px-3 py-1.5 transition ${
-                    debriefInputMode === "voice"
-                      ? "bg-indigo-500/30 text-indigo-100"
-                      : "text-slate-300 hover:bg-white/5"
-                  }`}
-                >
-                  Voice first
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDebriefInputMode("text")}
-                  className={`rounded-md px-3 py-1.5 transition ${
-                    debriefInputMode === "text"
-                      ? "bg-indigo-500/30 text-indigo-100"
-                      : "text-slate-300 hover:bg-white/5"
-                  }`}
-                >
-                  Text only
-                </button>
-              </div>
+              {activeSessionInputMode === "voice" ? (
+                <div className="rounded-xl border border-cyan-300/30 bg-cyan-500/10 p-3 text-sm text-cyan-100">
+                  Full voice session debrief: prompts are spoken aloud. You can reply by speaking first,
+                  then finalize with edits below.
+                  <button
+                    type="button"
+                    onClick={() =>
+                      maybeSpeak(
+                        "What was finished? What blocked progress? What is your best next step?",
+                      )
+                    }
+                    className="mt-2 block rounded-lg border border-cyan-200/50 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-100 transition hover:bg-cyan-500/20"
+                  >
+                    Replay debrief prompts
+                  </button>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-indigo-400/25 bg-indigo-500/10 p-3 text-sm text-indigo-100">
+                  Text mode session: capture a concise accountability debrief below.
+                </div>
+              )}
 
               <label className="grid gap-1 text-sm">
                 What was finished?
@@ -632,7 +799,7 @@ export function MvpHomePage() {
                   onChange={(event) => setDebriefFinished(event.target.value)}
                   className="min-h-20 rounded-lg border border-white/20 bg-slate-950 px-3 py-2"
                   placeholder={
-                    debriefInputMode === "voice"
+                    activeSessionInputMode === "voice"
                       ? "After speaking your recap, capture the key outcomes."
                       : "Capture key outcomes from this focus block."
                   }

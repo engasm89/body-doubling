@@ -191,7 +191,6 @@ export function useSpeechRecognition(
 
       recognition.onresult = (event) => {
         let nextFinalPart = "";
-        let nextInterimPart = "";
 
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
           const result = event.results[index];
@@ -200,9 +199,17 @@ export function useSpeechRecognition(
 
           if (result.isFinal) {
             nextFinalPart = joinTranscripts(nextFinalPart, transcriptChunk);
-          } else {
-            nextInterimPart = joinTranscripts(nextInterimPart, transcriptChunk);
           }
+        }
+
+        let nextInterimPart = "";
+        for (let index = 0; index < event.results.length; index += 1) {
+          const result = event.results[index];
+          if (result.isFinal) continue;
+
+          const transcriptChunk = result[0]?.transcript?.trim() ?? "";
+          if (!transcriptChunk) continue;
+          nextInterimPart = joinTranscripts(nextInterimPart, transcriptChunk);
         }
 
         if (nextFinalPart) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSpeechRecognition } from "@/lib/speech-recognition";
 import { speakText, stopSpeaking } from "@/lib/speech";
 
@@ -20,6 +20,7 @@ type GuidedVoiceIntakeProps = {
   onSubmit: () => void;
   isSubmitting?: boolean;
   voiceEnabled?: boolean;
+  activationTick?: number;
 };
 
 type IntakeStep = {
@@ -62,6 +63,46 @@ const steps: IntakeStep[] = [
     helper: "Name the smallest action you can do first.",
   },
 ];
+const AUTO_START_DELAY_MS = 260;
+const SILENCE_CAPTURE_DELAY_MS = 1800;
+
+type LiveTranscriptCardProps = {
+  listening: boolean;
+  isPromptSpeaking: boolean;
+  interimTranscript: string;
+  finalTranscript: string;
+  placeholder: string;
+};
+
+function LiveTranscriptCard({
+  listening,
+  isPromptSpeaking,
+  interimTranscript,
+  finalTranscript,
+  placeholder,
+}: LiveTranscriptCardProps) {
+  return (
+    <div className="rounded-xl border border-cyan-300/30 bg-cyan-500/10 px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs uppercase tracking-[0.14em] text-cyan-100">Live caption</p>
+        <div className="inline-flex items-center gap-2 text-xs text-cyan-100">
+          <span
+            className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
+              listening ? "bg-rose-400" : "bg-slate-500"
+            }`}
+          >
+            {listening && <span className="absolute inset-0 animate-ping rounded-full bg-rose-300/70" />}
+          </span>
+          {listening ? "Listening..." : isPromptSpeaking ? "Coach speaking..." : "Waiting"}
+        </div>
+      </div>
+      <p className="mt-2 text-[11px] uppercase tracking-[0.12em] text-cyan-200/90">Interim</p>
+      <p className="mt-1 min-h-5 text-sm text-cyan-50">{interimTranscript || "..."}</p>
+      <p className="mt-3 text-[11px] uppercase tracking-[0.12em] text-cyan-200/90">Final</p>
+      <p className="mt-1 min-h-5 text-sm text-cyan-50">{finalTranscript || placeholder}</p>
+    </div>
+  );
+}
 
 function parseSpokenDuration(transcript: string): number | null {
   const lower = transcript.toLowerCase();
@@ -86,13 +127,21 @@ export function GuidedVoiceIntake({
   onSubmit,
   isSubmitting = false,
   voiceEnabled = true,
+  activationTick = 0,
 }: GuidedVoiceIntakeProps) {
   const [stepIndex, setStepIndex] = useState(0);
+  const autoListenArmedRef = useRef(true);
+  const [isPromptSpeaking, setIsPromptSpeaking] = useState(false);
   const currentStep = steps[stepIndex];
   const isFinalStep = stepIndex === steps.length - 1;
+  const autoListenTimerRef = useRef<number | null>(null);
+  const silenceCaptureTimerRef = useRef<number | null>(null);
+  const lastActivationTickRef = useRef(activationTick);
 
   const {
     listening,
+    interimTranscript,
+    finalTranscript,
     transcript,
     error,
     start,
@@ -105,14 +154,94 @@ export function GuidedVoiceIntake({
     interimResults: true,
   });
 
-  useEffect(() => {
-    if (!voiceEnabled) return;
-    speakText(currentStep.prompt);
-  }, [currentStep.prompt, voiceEnabled]);
+  const clearAutoListenTimer = useCallback(() => {
+    if (autoListenTimerRef.current !== null) {
+      window.clearTimeout(autoListenTimerRef.current);
+      autoListenTimerRef.current = null;
+    }
+  }, []);
+
+  const clearSilenceCaptureTimer = useCallback(() => {
+    if (silenceCaptureTimerRef.current !== null) {
+      window.clearTimeout(silenceCaptureTimerRef.current);
+      silenceCaptureTimerRef.current = null;
+    }
+  }, []);
+
+  const beginListening = useCallback(
+    (options: { userInitiated?: boolean; reset?: boolean } = {}) => {
+      clearError();
+      if (options.reset ?? true) {
+        resetTranscript();
+      }
+      start({ userInitiated: options.userInitiated ?? true });
+    },
+    [clearError, resetTranscript, start],
+  );
 
   useEffect(() => {
-    return () => stopSpeaking();
-  }, []);
+    if (!voiceEnabled) return;
+
+    clearAutoListenTimer();
+    stop();
+    clearError();
+    resetTranscript();
+    speakText(currentStep.prompt, {
+      onStart: () => setIsPromptSpeaking(true),
+      onEnd: () => {
+        setIsPromptSpeaking(false);
+        if (!autoListenArmedRef.current) return;
+        autoListenTimerRef.current = window.setTimeout(() => {
+          beginListening({ userInitiated: false, reset: true });
+        }, AUTO_START_DELAY_MS);
+      },
+      onError: () => {
+        setIsPromptSpeaking(false);
+        if (!autoListenArmedRef.current) return;
+        autoListenTimerRef.current = window.setTimeout(() => {
+          beginListening({ userInitiated: false, reset: true });
+        }, AUTO_START_DELAY_MS);
+      },
+    });
+  }, [
+    beginListening,
+    clearAutoListenTimer,
+    clearError,
+    currentStep.prompt,
+    resetTranscript,
+    stop,
+    voiceEnabled,
+  ]);
+
+  useEffect(() => {
+    if (!voiceEnabled) return;
+    if (activationTick === lastActivationTickRef.current) return;
+    lastActivationTickRef.current = activationTick;
+    autoListenArmedRef.current = true;
+    clearError();
+    beginListening({ userInitiated: true, reset: false });
+  }, [activationTick, beginListening, clearError, voiceEnabled]);
+
+  useEffect(() => {
+    if (!listening || !transcript.trim()) {
+      clearSilenceCaptureTimer();
+      return;
+    }
+
+    clearSilenceCaptureTimer();
+    silenceCaptureTimerRef.current = window.setTimeout(() => {
+      stop();
+    }, SILENCE_CAPTURE_DELAY_MS);
+  }, [clearSilenceCaptureTimer, listening, stop, transcript]);
+
+  useEffect(() => {
+    return () => {
+      clearAutoListenTimer();
+      clearSilenceCaptureTimer();
+      stopSpeaking();
+      stop();
+    };
+  }, [clearAutoListenTimer, clearSilenceCaptureTimer, stop]);
 
   const updateValue = useCallback(
     (key: keyof GuidedVoiceIntakeValues, nextValue: string | number) => {
@@ -149,36 +278,69 @@ export function GuidedVoiceIntake({
     return "";
   }, [currentStep.key, values]);
 
-  const beginListening = useCallback(() => {
-    clearError();
-    resetTranscript();
-    start({ userInitiated: true });
-  }, [clearError, resetTranscript, start]);
-
-  const captureTranscript = useCallback(() => {
+  const captureTranscript = useCallback((options: { autoAdvance?: boolean } = {}) => {
     const spoken = transcript.trim();
     stop();
+    clearSilenceCaptureTimer();
     if (!spoken) {
       resetTranscript();
       return;
     }
 
+    let capturedValue: string | number | null = spoken;
     if (currentStep.key === "durationMinutes") {
       const parsedDuration = parseSpokenDuration(spoken);
       if (parsedDuration) {
         updateValue("durationMinutes", parsedDuration);
+        capturedValue = parsedDuration;
+      } else {
+        capturedValue = null;
       }
     } else if (currentStep.key === "difficultyLevel") {
       const parsedDifficulty = parseSpokenDifficulty(spoken);
       if (parsedDifficulty) {
         updateValue("difficultyLevel", parsedDifficulty);
+        capturedValue = parsedDifficulty;
+      } else {
+        capturedValue = null;
       }
     } else {
       updateValue(currentStep.key, spoken);
     }
 
+    const shouldAdvance = options.autoAdvance ?? false;
     resetTranscript();
-  }, [currentStep.key, resetTranscript, stop, transcript, updateValue]);
+
+    if (shouldAdvance) {
+      if (capturedValue === null) return;
+      const hasValue =
+        typeof capturedValue === "number" ? capturedValue > 0 : String(capturedValue).trim().length > 0;
+      if (!hasValue) return;
+      if (isFinalStep) {
+        onSubmit();
+        return;
+      }
+      setStepIndex((prev) => prev + 1);
+    }
+  }, [
+    clearSilenceCaptureTimer,
+    currentStep.key,
+    isFinalStep,
+    onSubmit,
+    resetTranscript,
+    stop,
+    transcript,
+    updateValue,
+  ]);
+
+  useEffect(() => {
+    if (listening || !autoListenArmedRef.current || isPromptSpeaking) return;
+    if (!transcript.trim()) return;
+    const autoAdvanceTimer = window.setTimeout(() => {
+      captureTranscript({ autoAdvance: true });
+    }, 0);
+    return () => window.clearTimeout(autoAdvanceTimer);
+  }, [captureTranscript, isPromptSpeaking, listening, transcript]);
 
   const canAdvance = useMemo(() => {
     const value = values[currentStep.key];
@@ -187,6 +349,7 @@ export function GuidedVoiceIntake({
   }, [currentStep.key, values]);
 
   const goNext = () => {
+    autoListenArmedRef.current = true;
     if (!canAdvance) return;
     if (isFinalStep) {
       onSubmit();
@@ -217,7 +380,14 @@ export function GuidedVoiceIntake({
         <div className="grid gap-3 sm:grid-cols-[auto_1fr] sm:items-center">
           <button
             type="button"
-            onClick={() => (listening ? captureTranscript() : beginListening())}
+            onClick={() => {
+              autoListenArmedRef.current = true;
+              if (listening) {
+                captureTranscript({ autoAdvance: true });
+                return;
+              }
+              beginListening({ userInitiated: true, reset: true });
+            }}
             aria-pressed={listening}
             className={`mx-auto flex h-24 w-24 items-center justify-center rounded-full border text-center text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 ${
               listening
@@ -225,13 +395,16 @@ export function GuidedVoiceIntake({
                 : "border-indigo-200/70 bg-indigo-500 shadow-[0_0_38px_rgba(99,102,241,0.55)] hover:bg-indigo-400"
             }`}
           >
-            {listening ? "Stop" : "Tap mic"}
+            {listening ? "Listening..." : "Start mic"}
           </button>
 
-          <div className="rounded-xl border border-white/15 bg-slate-900/70 px-3 py-3 text-sm text-slate-100">
-            {(listening ? transcript : currentAnswer || transcript) ||
-              "Your answer appears here after you speak."}
-          </div>
+          <LiveTranscriptCard
+            listening={listening}
+            isPromptSpeaking={isPromptSpeaking}
+            finalTranscript={listening ? finalTranscript : currentAnswer || finalTranscript}
+            interimTranscript={listening ? interimTranscript : ""}
+            placeholder="Your answer appears here after you speak."
+          />
         </div>
 
         {currentStep.key === "durationMinutes" && (
@@ -282,8 +455,19 @@ export function GuidedVoiceIntake({
           <button
             type="button"
             onClick={() => {
+              autoListenArmedRef.current = true;
               stopSpeaking();
-              speakText(currentStep.prompt);
+              clearAutoListenTimer();
+              speakText(currentStep.prompt, {
+                onStart: () => setIsPromptSpeaking(true),
+                onEnd: () => {
+                  setIsPromptSpeaking(false);
+                  autoListenTimerRef.current = window.setTimeout(() => {
+                    beginListening({ userInitiated: false, reset: true });
+                  }, AUTO_START_DELAY_MS);
+                },
+                onError: () => setIsPromptSpeaking(false),
+              });
             }}
             className="rounded-lg border border-white/20 px-3 py-2 text-sm text-slate-100 hover:border-indigo-300 hover:bg-indigo-500/10"
           >
@@ -304,8 +488,8 @@ export function GuidedVoiceIntake({
         ) : (
           <p className="text-xs text-slate-400">
             {listening
-              ? "Listening now. Tap mic again to capture."
-              : "One mic runs the whole intake flow in voice mode."}
+              ? "Listening now. We auto-capture after a short silence."
+              : "Prompts are spoken, then the mic auto-starts for each step."}
           </p>
         )}
       </div>

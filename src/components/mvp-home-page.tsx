@@ -86,6 +86,7 @@ export function MvpHomePage() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [speaking, setSpeaking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [voiceActivationTick, setVoiceActivationTick] = useState(0);
   const [intakeInputMode, setIntakeInputMode] = useState<IntakeInputMode>(() => {
     if (typeof window === "undefined") return "text";
     const saved = window.localStorage.getItem(INPUT_MODE_STORAGE_KEY);
@@ -109,6 +110,7 @@ export function MvpHomePage() {
   const [debriefNextStep, setDebriefNextStep] = useState("");
   const lastSpokenCoachMessageRef = useRef("");
   const promptedPhaseRef = useRef<string | null>(null);
+  const checkInAutoListenArmedRef = useRef(false);
 
   const {
     listening: checkInVoiceListening,
@@ -195,6 +197,38 @@ export function MvpHomePage() {
     resetCheckInVoiceTranscript();
     clearCheckInVoiceError();
   }, [clearCheckInVoiceError, phase, resetCheckInVoiceTranscript, stopCheckInVoice]);
+
+  useEffect(() => {
+    checkInAutoListenArmedRef.current =
+      phase === "check_in" && activeSessionInputMode === "voice" && voiceInputSupported;
+  }, [activeSessionInputMode, phase, voiceInputSupported]);
+
+  useEffect(() => {
+    if (
+      !checkInAutoListenArmedRef.current ||
+      phase !== "check_in" ||
+      activeSessionInputMode !== "voice" ||
+      !voiceInputSupported ||
+      checkInVoiceListening ||
+      busy
+    ) {
+      return;
+    }
+
+    checkInAutoListenArmedRef.current = false;
+    clearCheckInVoiceError();
+    resetCheckInVoiceTranscript();
+    startCheckInVoice({ userInitiated: false });
+  }, [
+    activeSessionInputMode,
+    busy,
+    checkInVoiceListening,
+    clearCheckInVoiceError,
+    phase,
+    resetCheckInVoiceTranscript,
+    startCheckInVoice,
+    voiceInputSupported,
+  ]);
 
   const startSession = async () => {
     if (!user) {
@@ -508,7 +542,10 @@ export function MvpHomePage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setIntakeInputMode("voice")}
+                    onClick={() => {
+                      setIntakeInputMode("voice");
+                      setVoiceActivationTick((prev) => prev + 1);
+                    }}
                     disabled={!voiceInputSupported}
                     className={`rounded-2xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${
                       intakeInputMode === "voice"
@@ -546,6 +583,7 @@ export function MvpHomePage() {
                   onSubmit={startSession}
                   isSubmitting={busy || loading}
                   voiceEnabled={voiceEnabled}
+                  activationTick={voiceActivationTick}
                 />
               ) : (
                 <form
@@ -717,10 +755,14 @@ export function MvpHomePage() {
                           : "border-indigo-200/70 bg-indigo-500 shadow-[0_0_32px_rgba(99,102,241,0.5)] hover:bg-indigo-400"
                       }`}
                     >
-                      {checkInVoiceListening ? "Stop" : "Tap mic"}
+                      {checkInVoiceListening ? "Listening..." : "Start mic"}
                     </button>
-                    <div className="rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm text-slate-100">
-                      {checkInVoiceTranscript.trim() || "Say: on track, stuck, distracted, or done early."}
+                    <div className="rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-slate-100">
+                      <p className="text-xs uppercase tracking-[0.12em] text-cyan-200">Live transcript</p>
+                      <p className="mt-1 text-sm">
+                        {checkInVoiceTranscript.trim() ||
+                          "Say: on track, stuck, distracted, or done early."}
+                      </p>
                     </div>
                   </div>
                   {parsedVoiceCheckIn && (

@@ -10,3 +10,4 @@ export type { DebriefValues } from "./DebriefForm";
 export { VoiceToggle } from "./VoiceToggle";
 export { VoiceInputField } from "./VoiceInputField";
 export { isSpeechRecognitionSupported } from "./VoiceInputField";
+export { LiveTranscriptCard } from "./LiveTranscriptCard";

@@ -27,6 +27,7 @@ type GuidedVoiceIntakeProps = {
   isSubmitting?: boolean;
   voiceEnabled?: boolean;
   activationTick?: number;
+  onRegisterImmediateStart?: (startListeningNow: (() => void) | null) => void;
 };
 
 type IntakeStep = {
@@ -72,6 +73,7 @@ const steps: IntakeStep[] = [
 const AUTO_START_DELAY_MS = 260;
 const SILENCE_CAPTURE_DELAY_MS = 1800;
 const RESTART_LISTENING_DELAY_MS = 220;
+const MAX_LISTEN_RETRIES_BEFORE_FALLBACK = 2;
 
 type LiveTranscriptCardProps = {
   listening: boolean;
@@ -213,6 +215,7 @@ export function GuidedVoiceIntake({
   isSubmitting = false,
   voiceEnabled = true,
   activationTick = 0,
+  onRegisterImmediateStart,
 }: GuidedVoiceIntakeProps) {
   const speechSupported = useMemo(() => isSpeechRecognitionSupported(), []);
   const [stepIndex, setStepIndex] = useState(0);
@@ -287,6 +290,7 @@ export function GuidedVoiceIntake({
     listening,
     state: recognitionState,
     eventCounts,
+    retryCount,
     interimTranscript,
     finalTranscript,
     transcript,
@@ -325,8 +329,9 @@ export function GuidedVoiceIntake({
   }, []);
 
   const beginListening = useCallback(
-    (options: { userInitiated?: boolean; reset?: boolean; maintainListening?: boolean } = {}) => {
+    async (options: { userInitiated?: boolean; reset?: boolean; maintainListening?: boolean } = {}) => {
       clearError();
+      stopSpeaking();
       if (options.userInitiated ?? true) {
         void probeMicPermission();
       }
@@ -334,7 +339,10 @@ export function GuidedVoiceIntake({
         resetTranscript();
       }
       shouldMaintainListeningRef.current = options.maintainListening ?? true;
-      return start({ userInitiated: options.userInitiated ?? true });
+      return start({
+        userInitiated: options.userInitiated ?? true,
+        autoRestart: options.maintainListening ?? true,
+      });
     },
     [clearError, probeMicPermission, resetTranscript, start],
   );
@@ -364,11 +372,13 @@ export function GuidedVoiceIntake({
     stopSpeaking();
     clearError();
     if (!autoListenArmedRef.current) return;
-    const started = beginListening({ userInitiated: false, reset: true, maintainListening: true });
-    if (started) return;
-    autoListenTimerRef.current = window.setTimeout(() => {
-      beginListening({ userInitiated: false, reset: false, maintainListening: true });
-    }, AUTO_START_DELAY_MS);
+    void (async () => {
+      const started = await beginListening({ userInitiated: false, reset: true, maintainListening: true });
+      if (started) return;
+      autoListenTimerRef.current = window.setTimeout(() => {
+        void beginListening({ userInitiated: false, reset: false, maintainListening: true });
+      }, AUTO_START_DELAY_MS);
+    })();
   }, [
     beginListening,
     clearAutoListenTimer,
@@ -389,7 +399,7 @@ export function GuidedVoiceIntake({
     stopSpeaking();
     clearRestartListeningTimer();
     clearError();
-    beginListening({ userInitiated: true, reset: false, maintainListening: true });
+    void beginListening({ userInitiated: true, reset: false, maintainListening: true });
   }, [activationTick, beginListening, clearError, clearRestartListeningTimer, voiceEnabled]);
 
   useEffect(() => {
@@ -426,7 +436,7 @@ export function GuidedVoiceIntake({
     clearRestartListeningTimer();
     restartListeningTimerRef.current = window.setTimeout(() => {
       setRestartCount((previous) => previous + 1);
-      beginListening({ userInitiated: false, reset: false, maintainListening: true });
+      void beginListening({ userInitiated: false, reset: false, maintainListening: true });
     }, RESTART_LISTENING_DELAY_MS);
     return clearRestartListeningTimer;
   }, [
@@ -439,6 +449,18 @@ export function GuidedVoiceIntake({
     listening,
     voiceEnabled,
   ]);
+
+  useEffect(() => {
+    if (!onRegisterImmediateStart) return;
+    onRegisterImmediateStart(() => {
+      autoListenArmedRef.current = true;
+      shouldMaintainListeningRef.current = true;
+      void beginListening({ userInitiated: true, reset: true, maintainListening: true });
+    });
+    return () => {
+      onRegisterImmediateStart(null);
+    };
+  }, [beginListening, onRegisterImmediateStart]);
 
   useEffect(() => {
     return () => {
@@ -557,6 +579,17 @@ export function GuidedVoiceIntake({
     return value.trim().length > 0;
   }, [currentStep.key, values]);
 
+  const showMicFallback =
+    retryCount >= MAX_LISTEN_RETRIES_BEFORE_FALLBACK &&
+    !listening &&
+    Boolean(
+      error &&
+        (error.code === "permission-denied" ||
+          error.code === "gesture-required" ||
+          error.code === "recognition-error" ||
+          error.code === "no-microphone"),
+    );
+
   const goNext = () => {
     autoListenArmedRef.current = true;
     if (!canAdvance) return;
@@ -596,7 +629,7 @@ export function GuidedVoiceIntake({
                 captureTranscript({ autoAdvance: true });
                 return;
               }
-              beginListening({ userInitiated: true, reset: true, maintainListening: true });
+              void beginListening({ userInitiated: true, reset: true, maintainListening: true });
             }}
             aria-pressed={listening}
             className={`mx-auto flex h-24 w-24 items-center justify-center rounded-full border text-center text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 ${
@@ -688,7 +721,7 @@ export function GuidedVoiceIntake({
                 onEnd: () => {
                   setIsPromptSpeaking(false);
                   autoListenTimerRef.current = window.setTimeout(() => {
-                    beginListening({ userInitiated: false, reset: true, maintainListening: true });
+                    void beginListening({ userInitiated: false, reset: true, maintainListening: true });
                   }, AUTO_START_DELAY_MS);
                 },
                 onError: () => setIsPromptSpeaking(false),
@@ -707,6 +740,20 @@ export function GuidedVoiceIntake({
             {isSubmitting ? "Starting..." : isFinalStep ? "Start body doubling session" : "Confirm & next"}
           </button>
         </div>
+
+        {showMicFallback && (
+          <button
+            type="button"
+            onClick={() => {
+              autoListenArmedRef.current = true;
+              shouldMaintainListeningRef.current = true;
+              void beginListening({ userInitiated: true, reset: false, maintainListening: true });
+            }}
+            className="w-full rounded-2xl border border-rose-200/60 bg-rose-500/20 px-4 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/30"
+          >
+            Allow microphone
+          </button>
+        )}
 
         {error ? (
           <div className="rounded-xl border border-rose-300/45 bg-rose-500/15 p-3 text-rose-100">

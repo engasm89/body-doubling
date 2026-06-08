@@ -108,6 +108,7 @@ export function MvpHomePage() {
   const [debriefFinished, setDebriefFinished] = useState("");
   const [debriefBlocked, setDebriefBlocked] = useState("");
   const [debriefNextStep, setDebriefNextStep] = useState("");
+  const guidedVoiceImmediateStartRef = useRef<(() => void) | null>(null);
   const lastSpokenCoachMessageRef = useRef("");
   const promptedPhaseRef = useRef<string | null>(null);
   const checkInAutoListenArmedRef = useRef(false);
@@ -218,7 +219,7 @@ export function MvpHomePage() {
     checkInAutoListenArmedRef.current = false;
     clearCheckInVoiceError();
     resetCheckInVoiceTranscript();
-    startCheckInVoice({ userInitiated: false });
+    void startCheckInVoice({ userInitiated: false, autoRestart: true });
   }, [
     activeSessionInputMode,
     busy,
@@ -544,7 +545,11 @@ export function MvpHomePage() {
                     type="button"
                     onClick={() => {
                       setIntakeInputMode("voice");
-                      setVoiceActivationTick((prev) => prev + 1);
+                      if (guidedVoiceImmediateStartRef.current) {
+                        guidedVoiceImmediateStartRef.current();
+                      } else {
+                        setVoiceActivationTick((prev) => prev + 1);
+                      }
                     }}
                     disabled={!voiceInputSupported}
                     className={`rounded-2xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${
@@ -584,6 +589,9 @@ export function MvpHomePage() {
                   isSubmitting={busy || loading}
                   voiceEnabled={voiceEnabled}
                   activationTick={voiceActivationTick}
+                  onRegisterImmediateStart={(startListeningNow) => {
+                    guidedVoiceImmediateStartRef.current = startListeningNow;
+                  }}
                 />
               ) : (
                 <form
@@ -747,7 +755,7 @@ export function MvpHomePage() {
                         }
                         clearCheckInVoiceError();
                         resetCheckInVoiceTranscript();
-                        startCheckInVoice({ userInitiated: true });
+                        void startCheckInVoice({ userInitiated: true, autoRestart: true });
                       }}
                       className={`mx-auto flex h-20 w-20 items-center justify-center rounded-full border text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition ${
                         checkInVoiceListening

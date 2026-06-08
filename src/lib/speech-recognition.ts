@@ -83,6 +83,7 @@ export type UseSpeechRecognitionOptions = {
 
 export type SpeechRecognitionStartOptions = {
   userInitiated?: boolean;
+  autoRestart?: boolean;
 };
 
 export type SpeechRecognitionState = "idle" | "starting" | "listening" | "error" | "ended";
@@ -119,13 +120,15 @@ export type UseSpeechRecognitionReturn = {
   transcript: string;
   error: UseSpeechRecognitionError | null;
   lastError: UseSpeechRecognitionError | null;
-  start: (options?: SpeechRecognitionStartOptions) => boolean;
+  start: (options?: SpeechRecognitionStartOptions) => Promise<boolean>;
+  retryCount: number;
   stop: () => void;
   resetTranscript: () => void;
   clearError: () => void;
 };
 
 let activeRecognition: BrowserSpeechRecognition | null = null;
+const AUTO_RESTART_DELAY_MS = 240;
 
 function normalizeStartErrorMessage(error: unknown): string | null {
   if (!(error instanceof Error)) return null;
@@ -147,6 +150,22 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
 
 export function isSpeechRecognitionSupported(): boolean {
   return getSpeechRecognitionConstructor() !== null;
+}
+
+export async function requestMicrophonePermission(): Promise<boolean> {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  if (!window.navigator?.mediaDevices?.getUserMedia) {
+    return false;
+  }
+  try {
+    const stream = await window.navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function joinTranscripts(base: string, append: string): string {
@@ -171,7 +190,7 @@ export function useSpeechRecognition(
   const [error, setError] = useState<UseSpeechRecognitionError | null>(null);
   const [lastError, setLastError] = useState<UseSpeechRecognitionError | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
-  const startOptionsRef = useRef<SpeechRecognitionStartOptions>({ userInitiated: true });
+  const startOptionsRef = useRef<SpeechRecognitionStartOptions>({ userInitiated: true, autoRestart: false });
   const stateRef = useRef<SpeechRecognitionState>("idle");
   const countsRef = useRef<SpeechRecognitionEventCounts>({
     starts: 0,
@@ -181,6 +200,10 @@ export function useSpeechRecognition(
   });
   const errorRef = useRef<UseSpeechRecognitionError | null>(null);
   const diagnosticCallbackRef = useRef(options.onDiagnosticEvent);
+  const restartTimerRef = useRef<number | null>(null);
+  const shouldAutoRestartRef = useRef(false);
+  const startInFlightRef = useRef(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     diagnosticCallbackRef.current = options.onDiagnosticEvent;
@@ -219,10 +242,19 @@ export function useSpeechRecognition(
     setError(null);
   }, []);
 
+  const clearRestartTimer = useCallback(() => {
+    if (restartTimerRef.current !== null) {
+      window.clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+  }, []);
+
   const stop = useCallback(() => {
     emitDiagnosticEvent("stop-requested");
+    shouldAutoRestartRef.current = false;
+    clearRestartTimer();
     recognitionRef.current?.stop();
-  }, [emitDiagnosticEvent]);
+  }, [clearRestartTimer, emitDiagnosticEvent]);
 
   const start = useCallback(async (startOptions: SpeechRecognitionStartOptions = {}): Promise<boolean> => {
     if (startInFlightRef.current) {
@@ -492,6 +524,7 @@ export function useSpeechRecognition(
     transcript: joinTranscripts(finalTranscript, interimTranscript),
     error,
     lastError,
+    retryCount,
     start,
     stop,
     resetTranscript,

@@ -148,7 +148,7 @@ export function VoiceInputField({
     setListeningBaseValue(value);
     resetTranscript();
     clearError();
-    start({ userInitiated: true });
+    void start({ userInitiated: true, autoRestart: true });
   }, [showTextInput, listening, value, resetTranscript, clearError, start]);
 
   const stopListening = useCallback(

@@ -65,6 +65,7 @@ const steps: IntakeStep[] = [
 ];
 const AUTO_START_DELAY_MS = 260;
 const SILENCE_CAPTURE_DELAY_MS = 1800;
+const RESTART_LISTENING_DELAY_MS = 220;
 
 type LiveTranscriptCardProps = {
   listening: boolean;
@@ -136,7 +137,9 @@ export function GuidedVoiceIntake({
   const isFinalStep = stepIndex === steps.length - 1;
   const autoListenTimerRef = useRef<number | null>(null);
   const silenceCaptureTimerRef = useRef<number | null>(null);
+  const restartListeningTimerRef = useRef<number | null>(null);
   const lastActivationTickRef = useRef(activationTick);
+  const shouldMaintainListeningRef = useRef(false);
 
   const {
     listening,
@@ -168,47 +171,54 @@ export function GuidedVoiceIntake({
     }
   }, []);
 
+  const clearRestartListeningTimer = useCallback(() => {
+    if (restartListeningTimerRef.current !== null) {
+      window.clearTimeout(restartListeningTimerRef.current);
+      restartListeningTimerRef.current = null;
+    }
+  }, []);
+
   const beginListening = useCallback(
-    (options: { userInitiated?: boolean; reset?: boolean } = {}) => {
+    (options: { userInitiated?: boolean; reset?: boolean; maintainListening?: boolean } = {}) => {
       clearError();
       if (options.reset ?? true) {
         resetTranscript();
       }
-      start({ userInitiated: options.userInitiated ?? true });
+      shouldMaintainListeningRef.current = options.maintainListening ?? true;
+      return start({ userInitiated: options.userInitiated ?? true });
     },
     [clearError, resetTranscript, start],
   );
 
   useEffect(() => {
-    if (!voiceEnabled) return;
+    if (!voiceEnabled) {
+      shouldMaintainListeningRef.current = false;
+      clearAutoListenTimer();
+      clearRestartListeningTimer();
+      clearSilenceCaptureTimer();
+      stopSpeaking();
+      stop();
+      return;
+    }
 
     clearAutoListenTimer();
-    stop();
+    clearRestartListeningTimer();
+    clearSilenceCaptureTimer();
+    stopSpeaking();
     clearError();
-    resetTranscript();
-    speakText(currentStep.prompt, {
-      onStart: () => setIsPromptSpeaking(true),
-      onEnd: () => {
-        setIsPromptSpeaking(false);
-        if (!autoListenArmedRef.current) return;
-        autoListenTimerRef.current = window.setTimeout(() => {
-          beginListening({ userInitiated: false, reset: true });
-        }, AUTO_START_DELAY_MS);
-      },
-      onError: () => {
-        setIsPromptSpeaking(false);
-        if (!autoListenArmedRef.current) return;
-        autoListenTimerRef.current = window.setTimeout(() => {
-          beginListening({ userInitiated: false, reset: true });
-        }, AUTO_START_DELAY_MS);
-      },
-    });
+    if (!autoListenArmedRef.current) return;
+    const started = beginListening({ userInitiated: false, reset: true, maintainListening: true });
+    if (started) return;
+    autoListenTimerRef.current = window.setTimeout(() => {
+      beginListening({ userInitiated: false, reset: false, maintainListening: true });
+    }, AUTO_START_DELAY_MS);
   }, [
     beginListening,
     clearAutoListenTimer,
+    clearRestartListeningTimer,
+    clearSilenceCaptureTimer,
     clearError,
-    currentStep.prompt,
-    resetTranscript,
+    currentStep.key,
     stop,
     voiceEnabled,
   ]);
@@ -218,9 +228,12 @@ export function GuidedVoiceIntake({
     if (activationTick === lastActivationTickRef.current) return;
     lastActivationTickRef.current = activationTick;
     autoListenArmedRef.current = true;
+    shouldMaintainListeningRef.current = true;
+    stopSpeaking();
+    clearRestartListeningTimer();
     clearError();
-    beginListening({ userInitiated: true, reset: false });
-  }, [activationTick, beginListening, clearError, voiceEnabled]);
+    beginListening({ userInitiated: true, reset: false, maintainListening: true });
+  }, [activationTick, beginListening, clearError, clearRestartListeningTimer, voiceEnabled]);
 
   useEffect(() => {
     if (!listening || !transcript.trim()) {
@@ -235,13 +248,50 @@ export function GuidedVoiceIntake({
   }, [clearSilenceCaptureTimer, listening, stop, transcript]);
 
   useEffect(() => {
+    if (!voiceEnabled || !autoListenArmedRef.current) {
+      clearRestartListeningTimer();
+      return;
+    }
+    if (listening || isPromptSpeaking || !shouldMaintainListeningRef.current || isSubmitting) {
+      clearRestartListeningTimer();
+      return;
+    }
+    if (
+      error &&
+      (error.code === "permission-denied" ||
+        error.code === "gesture-required" ||
+        error.code === "unsupported-browser" ||
+        error.code === "no-microphone")
+    ) {
+      clearRestartListeningTimer();
+      return;
+    }
+    clearRestartListeningTimer();
+    restartListeningTimerRef.current = window.setTimeout(() => {
+      beginListening({ userInitiated: false, reset: false, maintainListening: true });
+    }, RESTART_LISTENING_DELAY_MS);
+    return clearRestartListeningTimer;
+  }, [
+    autoListenArmedRef,
+    beginListening,
+    clearRestartListeningTimer,
+    error,
+    isPromptSpeaking,
+    isSubmitting,
+    listening,
+    voiceEnabled,
+  ]);
+
+  useEffect(() => {
     return () => {
       clearAutoListenTimer();
       clearSilenceCaptureTimer();
+      clearRestartListeningTimer();
+      shouldMaintainListeningRef.current = false;
       stopSpeaking();
       stop();
     };
-  }, [clearAutoListenTimer, clearSilenceCaptureTimer, stop]);
+  }, [clearAutoListenTimer, clearRestartListeningTimer, clearSilenceCaptureTimer, stop]);
 
   const updateValue = useCallback(
     (key: keyof GuidedVoiceIntakeValues, nextValue: string | number) => {
@@ -280,6 +330,7 @@ export function GuidedVoiceIntake({
 
   const captureTranscript = useCallback((options: { autoAdvance?: boolean } = {}) => {
     const spoken = transcript.trim();
+    shouldMaintainListeningRef.current = false;
     stop();
     clearSilenceCaptureTimer();
     if (!spoken) {
@@ -382,11 +433,12 @@ export function GuidedVoiceIntake({
             type="button"
             onClick={() => {
               autoListenArmedRef.current = true;
+              shouldMaintainListeningRef.current = true;
               if (listening) {
                 captureTranscript({ autoAdvance: true });
                 return;
               }
-              beginListening({ userInitiated: true, reset: true });
+              beginListening({ userInitiated: true, reset: true, maintainListening: true });
             }}
             aria-pressed={listening}
             className={`mx-auto flex h-24 w-24 items-center justify-center rounded-full border text-center text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 ${
@@ -401,9 +453,9 @@ export function GuidedVoiceIntake({
           <LiveTranscriptCard
             listening={listening}
             isPromptSpeaking={isPromptSpeaking}
-            finalTranscript={listening ? finalTranscript : currentAnswer || finalTranscript}
-            interimTranscript={listening ? interimTranscript : ""}
-            placeholder="Your answer appears here after you speak."
+            finalTranscript={finalTranscript || currentAnswer}
+            interimTranscript={interimTranscript}
+            placeholder="Start speaking..."
           />
         </div>
 
@@ -456,6 +508,8 @@ export function GuidedVoiceIntake({
             type="button"
             onClick={() => {
               autoListenArmedRef.current = true;
+              shouldMaintainListeningRef.current = false;
+              stop();
               stopSpeaking();
               clearAutoListenTimer();
               speakText(currentStep.prompt, {
@@ -463,7 +517,7 @@ export function GuidedVoiceIntake({
                 onEnd: () => {
                   setIsPromptSpeaking(false);
                   autoListenTimerRef.current = window.setTimeout(() => {
-                    beginListening({ userInitiated: false, reset: true });
+                    beginListening({ userInitiated: false, reset: true, maintainListening: true });
                   }, AUTO_START_DELAY_MS);
                 },
                 onError: () => setIsPromptSpeaking(false),
@@ -489,7 +543,7 @@ export function GuidedVoiceIntake({
           <p className="text-xs text-slate-400">
             {listening
               ? "Listening now. We auto-capture after a short silence."
-              : "Prompts are spoken, then the mic auto-starts for each step."}
+              : "Tap Start mic and speak naturally. We keep listening while this step is active."}
           </p>
         )}
       </div>
